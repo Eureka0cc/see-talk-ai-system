@@ -1,6 +1,7 @@
 package com.seetalk.service;
 
 import com.seetalk.config.SeeTalkProperties;
+import com.seetalk.model.constants.ImageConstants;
 import org.springframework.stereotype.Service;
 
 import java.awt.Graphics2D;
@@ -62,7 +63,7 @@ public class ImageProcessService {
             ImageWriter writer = ImageIO.getImageWritersByFormatName("jpeg").next();
             ImageWriteParam param = writer.getDefaultWriteParam();
             param.setCompressionMode(ImageWriteParam.MODE_EXPLICIT);
-            param.setCompressionQuality(0.75f);
+            param.setCompressionQuality(ImageConstants.JPEG_COMPRESSION_QUALITY);
 
             try (ImageOutputStream ios = ImageIO.createImageOutputStream(out)) {
                 writer.setOutput(ios);

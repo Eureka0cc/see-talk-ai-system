@@ -1,4 +1,4 @@
-package com.seetalk.entity;
+package com.seetalk.model.entity;
 
 import jakarta.persistence.Column;
 import jakarta.persistence.Embeddable;

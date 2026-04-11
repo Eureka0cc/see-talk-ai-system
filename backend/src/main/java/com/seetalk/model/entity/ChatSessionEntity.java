@@ -1,17 +1,23 @@
-package com.seetalk.entity;
+package com.seetalk.model.entity;
 
 import jakarta.persistence.Column;
 import jakarta.persistence.Embedded;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Table;
 import org.hibernate.annotations.Comment;
+import org.hibernate.annotations.SQLRestriction;
 
 import java.time.LocalDateTime;
 
 @Comment("聊天会话表")
 @Entity
+@SQLRestriction("is_deleted = 0")
 @Table(name = "chat_session")
 public class ChatSessionEntity extends BaseEntity {
+
+    @Comment("所属用户 ID（临时固定用户，后续接入登录后替换）")
+    @Column(name = "user_id", nullable = false)
+    private Long userId;
 
     @Comment("会话标题（AI 生成或首条用户消息摘要）")
     @Column(length = 128)
@@ -39,6 +45,14 @@ public class ChatSessionEntity extends BaseEntity {
 
     public String getTitle() {
         return title;
+    }
+
+    public Long getUserId() {
+        return userId;
+    }
+
+    public void setUserId(Long userId) {
+        this.userId = userId;
     }
 
     public void setTitle(String title) {

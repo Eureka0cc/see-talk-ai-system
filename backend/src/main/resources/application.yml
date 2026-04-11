@@ -9,6 +9,9 @@ logging:
   level:
     com.seetalk: INFO
     org.springframework.web.socket.handler.ExceptionWebSocketHandlerDecorator: WARN
+    # SQL 日志：显示 Hibernate 生成的 SQL 语句及绑定参数
+    org.hibernate.SQL: DEBUG
+    org.hibernate.orm.jdbc.bind: TRACE
 
 spring:
   autoconfigure:
@@ -34,11 +37,12 @@ spring:
   jpa:
     hibernate:
       ddl-auto: update
-    show-sql: false
+    show-sql: true
     properties:
       hibernate:
         dialect: org.hibernate.dialect.MySQLDialect
         use_sql_comments: true
+        format_sql: true
   ai:
     dashscope:
       api-key: ${AI_DASHSCOPE_API_KEY:${DASHSCOPE_API_KEY:}}
@@ -64,6 +68,7 @@ knife4j:
 seetalk:
   snowflake-worker-id: ${SEETALK_SNOWFLAKE_WORKER_ID:1}
   snowflake-datacenter-id: ${SEETALK_SNOWFLAKE_DATACENTER_ID:1}
+  default-user-id: ${SEETALK_DEFAULT_USER_ID:329767336584859648}
   cors-origins: http://localhost:5173,http://127.0.0.1:5173
   max-image-width: 640
   max-image-height: 480

@@ -1,5 +1,6 @@
 package com.seetalk.session;
 
+import com.seetalk.model.constants.SessionConstants;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Component;
@@ -26,10 +27,10 @@ public class InMemoryChatSessionStore implements ChatSessionStore {
     public void save(ChatSession session) {
         Long id = session.getId();
         metaStore.put(id, Map.of(
-                "lastImageHash", session.getLastImageHash() != null
+                SessionConstants.META_LAST_IMAGE_HASH, session.getLastImageHash() != null
                         ? session.getLastImageHash() : "",
-                "lastActive", String.valueOf(session.getLastActive().toEpochMilli()),
-                "createdAt", String.valueOf(session.getCreatedAt().toEpochMilli())
+                SessionConstants.META_LAST_ACTIVE, String.valueOf(session.getLastActive().toEpochMilli()),
+                SessionConstants.META_CREATED_AT, String.valueOf(session.getCreatedAt().toEpochMilli())
         ));
         List<String> msgs = new ArrayList<>();
         for (Message m : session.getMessages()) {
@@ -48,7 +49,7 @@ public class InMemoryChatSessionStore implements ChatSessionStore {
             return null;
         }
         ChatSession session = new ChatSession(sessionId);
-        String hash = meta.get("lastImageHash");
+        String hash = meta.get(SessionConstants.META_LAST_IMAGE_HASH);
         if (hash != null && !hash.isBlank()) {
             session.setLastImageHash(hash);
         }
@@ -63,7 +64,7 @@ public class InMemoryChatSessionStore implements ChatSessionStore {
             }
             session.replaceMessages(msgs);
         }
-        String lastActive = meta.get("lastActive");
+        String lastActive = meta.get(SessionConstants.META_LAST_ACTIVE);
         if (lastActive != null && !lastActive.isBlank()) {
             session.setLastActive(Instant.ofEpochMilli(Long.parseLong(lastActive)));
         }

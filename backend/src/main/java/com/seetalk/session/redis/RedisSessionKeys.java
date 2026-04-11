@@ -1,8 +1,10 @@
 package com.seetalk.session.redis;
 
+import com.seetalk.model.constants.SessionConstants;
+
 public final class RedisSessionKeys {
 
-    private static final String PREFIX = "seetalk:";
+    private static final String PREFIX = SessionConstants.REDIS_KEY_PREFIX;
 
     private RedisSessionKeys() {}
 

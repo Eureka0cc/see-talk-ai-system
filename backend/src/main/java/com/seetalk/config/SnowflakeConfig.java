@@ -1,6 +1,6 @@
 package com.seetalk.config;
 
-import com.seetalk.id.SnowflakeIdWorker;
+import com.seetalk.model.id.SnowflakeIdWorker;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 

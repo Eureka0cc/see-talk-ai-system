@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ConnectionStatus, WsIncoming } from "../types";
 
-function resolveWsUrl(): string {
+function resolveWsBaseUrl(): string {
   const configured = import.meta.env.VITE_WS_URL?.trim();
   if (configured) {
     return configured;
@@ -16,7 +16,24 @@ function resolveWsUrl(): string {
   return `${protocol}://${window.location.host}/ws/chat`;
 }
 
-const WS_URL = resolveWsUrl();
+const BASE_WS_URL = resolveWsBaseUrl();
+
+interface ConnectOptions {
+  sessionId?: string | null;
+}
+
+function normalizeSessionId(sessionId?: string | null): string | null {
+  const trimmed = sessionId?.trim();
+  return trimmed ? trimmed : null;
+}
+
+function buildWsUrl(sessionId?: string | null): string {
+  const normalized = normalizeSessionId(sessionId);
+  if (!normalized) return BASE_WS_URL;
+  const url = new URL(BASE_WS_URL, window.location.origin);
+  url.searchParams.set("sessionId", normalized);
+  return url.toString();
+}
 
 const CONNECT_TIMEOUT_MS = 8000;
 const BACKOFF_INITIAL_MS = 1000;
@@ -27,6 +44,7 @@ export function useWebSocket(
   onDisconnect?: () => void,
 ) {
   const [status, setStatus] = useState<ConnectionStatus>("disconnected");
+  const [wsUrl, setWsUrl] = useState(() => buildWsUrl());
   const wsRef = useRef<WebSocket | null>(null);
   const statusRef = useRef<ConnectionStatus>("disconnected");
   const onMessageRef = useRef(onMessage);
@@ -35,6 +53,8 @@ export function useWebSocket(
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const backoffRef = useRef(BACKOFF_INITIAL_MS);
   const intentionalCloseRef = useRef(false);
+  const requestedSessionIdRef = useRef<string | null>(null);
+  const wsUrlRef = useRef(buildWsUrl());
   onMessageRef.current = onMessage;
   onDisconnectRef.current = onDisconnect;
 
@@ -55,6 +75,13 @@ export function useWebSocket(
       clearTimeout(reconnectTimerRef.current);
       reconnectTimerRef.current = null;
     }
+  }, []);
+
+  const updateTargetUrl = useCallback((sessionId?: string | null) => {
+    requestedSessionIdRef.current = normalizeSessionId(sessionId);
+    const targetUrl = buildWsUrl(requestedSessionIdRef.current);
+    wsUrlRef.current = targetUrl;
+    setWsUrl(targetUrl);
   }, []);
 
   const connectInternalRef = useRef<() => void>(() => {});
@@ -84,10 +111,10 @@ export function useWebSocket(
     setConnectionStatus("connecting");
 
     if (import.meta.env.DEV) {
-      console.info("[ws] connecting to", WS_URL);
+      console.info("[ws] connecting to", wsUrlRef.current);
     }
 
-    const ws = new WebSocket(WS_URL);
+    const ws = new WebSocket(wsUrlRef.current);
     wsRef.current = ws;
 
     timeoutRef.current = setTimeout(() => {
@@ -127,7 +154,7 @@ export function useWebSocket(
       if (wsRef.current !== ws) return;
       setConnectionStatus("error");
       if (import.meta.env.DEV) {
-        console.error("[ws] connection error", WS_URL);
+        console.error("[ws] connection error", wsUrlRef.current);
       }
     };
 
@@ -142,19 +169,25 @@ export function useWebSocket(
 
   connectInternalRef.current = connectInternal;
 
-  const connect = useCallback(() => {
+  const connect = useCallback((options?: ConnectOptions) => {
+    if (options) {
+      updateTargetUrl(options.sessionId);
+    }
     backoffRef.current = BACKOFF_INITIAL_MS;
     connectInternal();
-  }, [connectInternal]);
+  }, [connectInternal, updateTargetUrl]);
 
-  const reconnect = useCallback(() => {
+  const reconnect = useCallback((options?: ConnectOptions) => {
+    if (options) {
+      updateTargetUrl(options.sessionId);
+    }
     intentionalCloseRef.current = false;
     backoffRef.current = BACKOFF_INITIAL_MS;
     clearReconnectTimer();
     wsRef.current?.close();
     wsRef.current = null;
     connectInternal();
-  }, [clearReconnectTimer, connectInternal]);
+  }, [clearReconnectTimer, connectInternal, updateTargetUrl]);
 
   const disconnect = useCallback(() => {
     intentionalCloseRef.current = true;
@@ -166,17 +199,22 @@ export function useWebSocket(
   }, [clearConnectTimeout, clearReconnectTimer, setConnectionStatus]);
 
   const ensureConnected = useCallback(
-    (timeoutMs = CONNECT_TIMEOUT_MS): Promise<boolean> => {
-      if (wsRef.current?.readyState === WebSocket.OPEN) {
+    (timeoutMs = CONNECT_TIMEOUT_MS, options?: ConnectOptions): Promise<boolean> => {
+      const requestedSessionId = normalizeSessionId(options?.sessionId);
+      const targetUrl = buildWsUrl(requestedSessionId);
+      const socketReady = wsRef.current?.readyState === WebSocket.OPEN;
+      if (requestedSessionIdRef.current !== requestedSessionId) {
+        reconnect({ sessionId: requestedSessionId });
+      } else if (socketReady && wsUrlRef.current === targetUrl) {
         return Promise.resolve(true);
+      } else {
+        connectInternal();
       }
-
-      connectInternal();
 
       return new Promise((resolve) => {
         const deadline = Date.now() + timeoutMs;
         const timer = setInterval(() => {
-          if (wsRef.current?.readyState === WebSocket.OPEN) {
+          if (wsRef.current?.readyState === WebSocket.OPEN && wsUrlRef.current === targetUrl) {
             clearInterval(timer);
             resolve(true);
             return;
@@ -188,7 +226,7 @@ export function useWebSocket(
         }, 100);
       });
     },
-    [connectInternal],
+    [connectInternal, reconnect],
   );
 
   const send = useCallback((payload: Record<string, unknown>) => {
@@ -204,5 +242,5 @@ export function useWebSocket(
     return () => disconnect();
   }, [connectInternal, disconnect]);
 
-  return { status, connect, reconnect, disconnect, send, ensureConnected, wsUrl: WS_URL };
+  return { status, connect, reconnect, disconnect, send, ensureConnected, wsUrl };
 }

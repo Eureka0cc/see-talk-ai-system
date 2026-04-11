@@ -1,6 +1,7 @@
-package com.seetalk.cost;
+package com.seetalk.rate;
 
 import com.seetalk.config.SeeTalkProperties;
+import com.seetalk.model.constants.RateLimitConstants;
 import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Component;
 
@@ -13,8 +14,6 @@ import java.util.concurrent.ConcurrentLinkedDeque;
 @Profile("test")
 public class InMemoryFrameRateLimiter implements FrameRateLimiter {
 
-    private static final long WINDOW_MS = 60_000L;
-
     private final Map<Long, Deque<Long>> sessions = new ConcurrentHashMap<>();
     private final int maxPerMinute;
 
@@ -25,7 +24,7 @@ public class InMemoryFrameRateLimiter implements FrameRateLimiter {
     @Override
     public boolean allow(Long sessionId) {
         long now = System.currentTimeMillis();
-        long windowStart = now - WINDOW_MS;
+        long windowStart = now - RateLimitConstants.WINDOW_MS;
 
         Deque<Long> frames = sessions.computeIfAbsent(sessionId,
                 k -> new ConcurrentLinkedDeque<>());

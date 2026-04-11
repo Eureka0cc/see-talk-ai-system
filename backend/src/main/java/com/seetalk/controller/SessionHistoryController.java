@@ -1,10 +1,16 @@
-package com.seetalk.api;
+package com.seetalk.controller;
 
-import com.seetalk.api.dto.MessageDto;
-import com.seetalk.api.dto.PageResponse;
-import com.seetalk.api.dto.SessionSummaryDto;
-import com.seetalk.entity.ChatMessageEntity;
-import com.seetalk.entity.ChatSessionEntity;
+import com.seetalk.common.BaseResponse;
+import com.seetalk.common.ResultUtils;
+import com.seetalk.exception.ErrorCode;
+import com.seetalk.exception.ThrowUtils;
+import com.seetalk.model.constants.ApiConstants;
+import com.seetalk.model.constants.ChatConstants;
+import com.seetalk.model.dto.MessageDto;
+import com.seetalk.model.dto.PageResponse;
+import com.seetalk.model.dto.SessionSummaryDto;
+import com.seetalk.model.entity.ChatMessageEntity;
+import com.seetalk.model.entity.ChatSessionEntity;
 import com.seetalk.service.ChatPersistenceService;
 import com.seetalk.service.SessionTitleService;
 import io.swagger.v3.oas.annotations.Operation;
@@ -13,8 +19,6 @@ import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
-import org.springframework.http.HttpStatus;
-import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -26,7 +30,7 @@ import java.util.List;
 
 @Tag(name = "会话历史", description = "对话会话列表、消息查询与删除")
 @RestController
-@RequestMapping("/api/sessions")
+@RequestMapping(ApiConstants.SESSIONS_PATH)
 public class SessionHistoryController {
 
     private final ChatPersistenceService persistenceService;
@@ -41,7 +45,7 @@ public class SessionHistoryController {
 
     @Operation(summary = "查询全部会话列表")
     @GetMapping
-    public PageResponse<SessionSummaryDto> listSessions(
+    public BaseResponse<PageResponse<SessionSummaryDto>> listSessions(
             @Parameter(description = "页码，从 0 开始") @RequestParam(defaultValue = "0") int page,
             @Parameter(description = "每页条数，最大 10000") @RequestParam(defaultValue = "10000") int size) {
         int safeSize = Math.min(Math.max(size, 1), 10000);
@@ -57,12 +61,12 @@ public class SessionHistoryController {
                 .map(this::toSessionSummary)
                 .toList();
 
-        return new PageResponse<>(
+        return ResultUtils.success(new PageResponse<>(
                 content,
                 result.getNumber(),
                 result.getSize(),
                 result.getTotalElements(),
-                result.getTotalPages());
+                result.getTotalPages()));
     }
 
     @Operation(summary = "查询会话消息", responses = {
@@ -70,15 +74,14 @@ public class SessionHistoryController {
             @ApiResponse(responseCode = "404", description = "会话不存在")
     })
     @GetMapping("/{id}/messages")
-    public ResponseEntity<List<MessageDto>> listMessages(
+    public BaseResponse<List<MessageDto>> listMessages(
             @Parameter(description = "会话 ID") @PathVariable Long id) {
-        if (!persistenceService.sessionExists(id)) {
-            return ResponseEntity.notFound().build();
-        }
+        ThrowUtils.throwIf(!persistenceService.sessionExists(id),
+                ErrorCode.NOT_FOUND_ERROR, "会话不存在");
         List<MessageDto> messages = persistenceService.listMessages(id).stream()
                 .map(this::toMessageDto)
                 .toList();
-        return ResponseEntity.ok(messages);
+        return ResultUtils.success(messages);
     }
 
     @Operation(summary = "删除会话（软删除）", responses = {
@@ -86,18 +89,17 @@ public class SessionHistoryController {
             @ApiResponse(responseCode = "404", description = "会话不存在")
     })
     @DeleteMapping("/{id}")
-    public ResponseEntity<Void> deleteSession(
+    public BaseResponse<Void> deleteSession(
             @Parameter(description = "会话 ID") @PathVariable Long id) {
-        if (!persistenceService.softDeleteSession(id)) {
-            return ResponseEntity.notFound().build();
-        }
-        return ResponseEntity.status(HttpStatus.NO_CONTENT).build();
+        boolean deleted = persistenceService.softDeleteSession(id);
+        ThrowUtils.throwIf(!deleted, ErrorCode.NOT_FOUND_ERROR, "会话不存在");
+        return ResultUtils.success();
     }
 
     private SessionSummaryDto toSessionSummary(ChatSessionEntity entity) {
         String title = entity.getTitle();
         if (title == null || title.isBlank()) {
-            title = "新对话";
+            title = ChatConstants.DEFAULT_SESSION_TITLE;
         }
         String preview = entity.getLastMessagePreview();
         if (preview == null || preview.isBlank()) {

@@ -1,4 +1,4 @@
-package com.seetalk.id;
+package com.seetalk.model.id;
 
 import org.hibernate.engine.spi.SharedSessionContractImplementor;
 import org.hibernate.generator.BeforeExecutionGenerator;

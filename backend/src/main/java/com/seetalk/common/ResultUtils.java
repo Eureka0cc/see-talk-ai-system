@@ -16,6 +16,15 @@ public class ResultUtils {
     }
 
     /**
+     * 成功（无数据）
+     *
+     * @return 响应
+     */
+    public static BaseResponse<Void> success() {
+        return new BaseResponse<>(0, null, "ok");
+    }
+
+    /**
      * 失败
      *
      * @param errorCode 错误码

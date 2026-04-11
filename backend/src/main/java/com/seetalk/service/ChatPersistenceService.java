@@ -1,39 +1,43 @@
 package com.seetalk.service;
 
-import com.seetalk.entity.ChatMessageEntity;
-import com.seetalk.entity.ChatSessionEntity;
-import com.seetalk.id.SnowflakeIdWorker;
+import com.seetalk.config.SeeTalkProperties;
+import com.seetalk.model.constants.ChatConstants;
+import com.seetalk.model.entity.ChatMessageEntity;
+import com.seetalk.model.entity.ChatSessionEntity;
+import com.seetalk.model.id.SnowflakeIdWorker;
 import com.seetalk.repository.ChatMessageRepository;
 import com.seetalk.repository.ChatSessionRepository;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
+import java.util.Collections;
 import java.util.List;
 
 @Slf4j
 @Service
 public class ChatPersistenceService {
 
-    private static final int TITLE_MAX_LENGTH = 128;
-    private static final int PREVIEW_MAX_LENGTH = 80;
-
     private final ChatSessionRepository sessionRepository;
     private final ChatMessageRepository messageRepository;
     private final SessionTitleService sessionTitleService;
+    private final Long defaultUserId;
 
     public ChatPersistenceService(
             ChatSessionRepository sessionRepository,
             ChatMessageRepository messageRepository,
-            SessionTitleService sessionTitleService) {
+            SessionTitleService sessionTitleService,
+            SeeTalkProperties properties) {
         this.sessionRepository = sessionRepository;
         this.messageRepository = messageRepository;
         this.sessionTitleService = sessionTitleService;
+        this.defaultUserId = properties.getDefaultUserId();
     }
 
     public Long allocateSessionId() {
@@ -67,6 +71,7 @@ public class ChatPersistenceService {
         }
         ChatSessionEntity entity = new ChatSessionEntity();
         entity.setId(sessionId);
+        entity.setUserId(defaultUserId);
         entity.setLastActiveTime(LocalDateTime.now());
         entity.setMessageCount(0);
         try {
@@ -86,16 +91,19 @@ public class ChatPersistenceService {
         if (session == null) {
             session = new ChatSessionEntity();
             session.setId(dbSessionId);
+            session.setUserId(defaultUserId);
             session.setLastActiveTime(LocalDateTime.now());
             session.setMessageCount(0);
             session = sessionRepository.save(session);
             log.warn("Compensated missing session on persistTurn: id={}", dbSessionId);
+        } else if (session.getUserId() == null || session.getUserId() == 0) {
+            session.setUserId(defaultUserId);
         }
 
         boolean isFirstTurn = session.getMessageCount() == 0;
 
-        saveMessage(dbSessionId, "user", userText, false);
-        saveMessage(dbSessionId, "assistant", assistantText, usedVision);
+        saveMessage(dbSessionId, ChatConstants.ROLE_USER, userText, false);
+        saveMessage(dbSessionId, ChatConstants.ROLE_ASSISTANT, assistantText, usedVision);
 
         if (isFirstTurn) {
             session.setTitle(truncateTitle(userText));
@@ -115,7 +123,7 @@ public class ChatPersistenceService {
 
     @Transactional(readOnly = true)
     public Page<ChatSessionEntity> listSessions(Pageable pageable) {
-        return sessionRepository.findAllByOrderByLastActiveTimeDesc(pageable);
+        return sessionRepository.findVisibleByUserIdOrderByLastActiveTimeDesc(defaultUserId, pageable);
     }
 
     @Transactional(readOnly = true)
@@ -124,18 +132,67 @@ public class ChatPersistenceService {
     }
 
     @Transactional(readOnly = true)
+    public List<ChatMessageEntity> listRecentMessagesForContext(Long sessionId, int limit) {
+        if (sessionId == null || !sessionExists(sessionId)) {
+            return List.of();
+        }
+        int safeLimit = Math.min(Math.max(limit, 1), 1000);
+        List<ChatMessageEntity> recent = messageRepository.findBySessionIdOrderByAuditCreateTimeDesc(
+                sessionId,
+                PageRequest.of(0, safeLimit));
+        Collections.reverse(recent);
+        return recent;
+    }
+
+    @Transactional(readOnly = true)
+    public List<ChatMessageEntity> searchCurrentUserMessages(
+            String query,
+            LocalDateTime startTime,
+            LocalDateTime endTime,
+            int limit) {
+        int safeLimit = Math.min(Math.max(limit, 1), 20);
+        String normalizedQuery = query == null ? "" : query.trim();
+        return messageRepository.searchVisibleMessagesByUserId(
+                defaultUserId,
+                normalizedQuery,
+                startTime,
+                endTime,
+                PageRequest.of(0, safeLimit));
+    }
+
+    @Transactional(readOnly = true)
     public boolean sessionExists(Long sessionId) {
-        return sessionRepository.findById(sessionId).isPresent();
+        return sessionRepository.existsVisibleByIdAndUserId(sessionId, defaultUserId);
+    }
+
+    @Transactional
+    public void clearSessionMessages(Long sessionId) {
+        List<ChatMessageEntity> messages = messageRepository
+                .findBySessionIdOrderByAuditCreateTimeAsc(sessionId);
+        for (ChatMessageEntity message : messages) {
+            message.setDeleted(true);
+            messageRepository.save(message);
+        }
+
+        ChatSessionEntity session = sessionRepository.findById(sessionId).orElse(null);
+        if (session != null) {
+            session.setMessageCount(0);
+            session.setLastMessagePreview("");
+            sessionRepository.save(session);
+        }
+
+        log.info("Cleared {} messages for session {}", messages.size(), sessionId);
     }
 
     @Transactional
     public boolean softDeleteSession(Long sessionId) {
-        ChatSessionEntity session = sessionRepository.findById(sessionId).orElse(null);
+        ChatSessionEntity session = sessionRepository.findVisibleByIdAndUserId(sessionId, defaultUserId).orElse(null);
         if (session == null) {
             return false;
         }
 
         session.setDeleted(true);
+        session.setLastActiveTime(LocalDateTime.now());
         sessionRepository.save(session);
 
         List<ChatMessageEntity> messages = messageRepository.findBySessionIdOrderByAuditCreateTimeAsc(sessionId);
@@ -158,13 +215,13 @@ public class ChatPersistenceService {
 
     private String truncateTitle(String text) {
         if (text == null || text.isBlank()) {
-            return "新对话";
+            return ChatConstants.DEFAULT_SESSION_TITLE;
         }
         String trimmed = text.trim();
-        if (trimmed.length() <= TITLE_MAX_LENGTH) {
+        if (trimmed.length() <= ChatConstants.FALLBACK_TITLE_MAX_LENGTH) {
             return trimmed;
         }
-        return trimmed.substring(0, TITLE_MAX_LENGTH - 3) + "...";
+        return trimmed.substring(0, ChatConstants.FALLBACK_TITLE_MAX_LENGTH - 3) + "...";
     }
 
     private String truncatePreview(String text) {
@@ -172,9 +229,9 @@ public class ChatPersistenceService {
             return "";
         }
         String trimmed = text.trim().replaceAll("\\s+", " ");
-        if (trimmed.length() <= PREVIEW_MAX_LENGTH) {
+        if (trimmed.length() <= ChatConstants.SESSION_PREVIEW_MAX_LENGTH) {
             return trimmed;
         }
-        return trimmed.substring(0, PREVIEW_MAX_LENGTH - 1) + "…";
+        return trimmed.substring(0, ChatConstants.SESSION_PREVIEW_MAX_LENGTH - 1) + "…";
     }
 }
