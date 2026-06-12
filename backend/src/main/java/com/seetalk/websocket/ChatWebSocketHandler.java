@@ -73,14 +73,18 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
     private void handleUserMessage(WebSocketSession session, ChatSession chatSession, JsonNode data)
             throws Exception {
         String text = data.path("text").asText("");
-        if (text.isBlank()) {
+        String image = data.has("image") && !data.get("image").isNull()
+                ? data.get("image").asText(null)
+                : null;
+
+        if (text.isBlank() && (image == null || image.isBlank())) {
             session.sendMessage(new TextMessage(WsMessage.error("消息内容为空")));
             return;
         }
 
         session.sendMessage(new TextMessage(WsMessage.thinking()));
         try {
-            VisionChatService.ChatResult result = visionChatService.chat(chatSession, text);
+            VisionChatService.ChatResult result = visionChatService.chat(chatSession, text, image);
             session.sendMessage(new TextMessage(
                     WsMessage.assistantMessage(result.text(), result.usedVision())));
         } catch (Exception e) {
