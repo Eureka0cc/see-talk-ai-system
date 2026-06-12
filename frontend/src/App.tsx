@@ -3,6 +3,7 @@ import { ChatPanel } from "./components/ChatPanel";
 import { ControlBar } from "./components/ControlBar";
 import { VideoPanel } from "./components/VideoPanel";
 import { useCamera } from "./hooks/useCamera";
+import { useVoiceActivity } from "./hooks/useVoiceActivity";
 import { useWebSocket } from "./hooks/useWebSocket";
 import type { ChatMessage, WsIncoming } from "./types";
 import "./App.css";
@@ -15,10 +16,17 @@ export default function App() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isThinking, setIsThinking] = useState(false);
   const [isSessionActive, setIsSessionActive] = useState(false);
+  const isSessionActiveRef = useRef(false);
   const sendRef = useRef<(p: Record<string, unknown>) => boolean>(() => false);
   const captureFrameRef = useRef<() => string | null>(() => null);
   const camera = useCamera();
   captureFrameRef.current = camera.captureFrame;
+
+  const voice = useVoiceActivity({
+    onSpeechEnd: (text) => {
+      if (isSessionActiveRef.current) sendMessage(text);
+    },
+  });
 
   const sendMessage = useCallback((text: string) => {
     if (!text.trim()) return;
@@ -55,14 +63,18 @@ export default function App() {
 
   const startSession = useCallback(async () => {
     await camera.start();
+    await voice.start();
+    isSessionActiveRef.current = true;
     setIsSessionActive(true);
-  }, [camera]);
+  }, [camera, voice]);
 
   const stopSession = useCallback(() => {
     camera.stop();
+    voice.stop();
+    isSessionActiveRef.current = false;
     setIsSessionActive(false);
     setIsThinking(false);
-  }, [camera]);
+  }, [camera, voice]);
 
   const clearHistory = useCallback(() => {
     wsSend({ type: "clear_history" });
@@ -78,7 +90,14 @@ export default function App() {
       </header>
       <main className="app-main">
         <div className="left-column">
-          <VideoPanel videoRef={camera.videoRef} isActive={camera.isActive} error={camera.error} />
+          <VideoPanel
+            videoRef={camera.videoRef}
+            isActive={camera.isActive}
+            isSpeaking={voice.isSpeaking}
+            isListening={voice.isListening}
+            transcript={voice.transcript}
+            error={camera.error || voice.error}
+          />
           <ControlBar
             isSessionActive={isSessionActive}
             isThinking={isThinking}
