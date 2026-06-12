@@ -1,8 +1,20 @@
 server:
   port: 8080
 
+spring:
+  ai:
+    dashscope:
+      api-key: ${DASHSCOPE_API_KEY:}
+      chat:
+        options:
+          model: qwen-vl-flash
+          max-tokens: 300
+          temperature: 0.7
+
 seetalk:
   cors-origins: http://localhost:5173,http://127.0.0.1:5173
   max-image-width: 640
   max-image-height: 480
   max-frames-per-minute: 12
+  max-context-messages: 20
+  session-timeout-seconds: 3600

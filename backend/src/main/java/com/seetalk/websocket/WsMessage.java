@@ -18,6 +18,20 @@ public final class WsMessage {
         return node.toString();
     }
 
+    public static String thinking() {
+        ObjectNode node = MAPPER.createObjectNode();
+        node.put("type", "thinking");
+        return node.toString();
+    }
+
+    public static String assistantMessage(String text, boolean usedVision) {
+        ObjectNode node = MAPPER.createObjectNode();
+        node.put("type", "assistant_message");
+        node.put("text", text);
+        node.put("used_vision", usedVision);
+        return node.toString();
+    }
+
     public static String error(String message) {
         ObjectNode node = MAPPER.createObjectNode();
         node.put("type", "error");

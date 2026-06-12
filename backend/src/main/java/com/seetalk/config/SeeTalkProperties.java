@@ -9,6 +9,8 @@ public class SeeTalkProperties {
     private int maxImageWidth = 640;
     private int maxImageHeight = 480;
     private int maxFramesPerMinute = 12;
+    private int maxContextMessages = 20;
+    private int sessionTimeoutSeconds = 3600;
 
     public int getMaxImageWidth() {
         return maxImageWidth;
@@ -32,6 +34,22 @@ public class SeeTalkProperties {
 
     public void setMaxFramesPerMinute(int maxFramesPerMinute) {
         this.maxFramesPerMinute = maxFramesPerMinute;
+    }
+
+    public int getMaxContextMessages() {
+        return maxContextMessages;
+    }
+
+    public void setMaxContextMessages(int maxContextMessages) {
+        this.maxContextMessages = maxContextMessages;
+    }
+
+    public int getSessionTimeoutSeconds() {
+        return sessionTimeoutSeconds;
+    }
+
+    public void setSessionTimeoutSeconds(int sessionTimeoutSeconds) {
+        this.sessionTimeoutSeconds = sessionTimeoutSeconds;
     }
 
     public String getCorsOrigins() {

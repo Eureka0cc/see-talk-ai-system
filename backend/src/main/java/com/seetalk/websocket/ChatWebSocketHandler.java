@@ -1,8 +1,10 @@
 package com.seetalk.websocket;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.seetalk.cost.FrameRateLimiter;
 import com.seetalk.session.ChatSession;
 import com.seetalk.session.ChatSessionManager;
+import com.seetalk.service.VisionChatService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
@@ -20,10 +22,17 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
     private static final Logger log = LoggerFactory.getLogger(ChatWebSocketHandler.class);
 
     private final ChatSessionManager sessionManager;
+    private final VisionChatService visionChatService;
+    private final FrameRateLimiter frameRateLimiter;
     private final Map<String, String> wsToChatSession = new ConcurrentHashMap<>();
 
-    public ChatWebSocketHandler(ChatSessionManager sessionManager) {
+    public ChatWebSocketHandler(
+            ChatSessionManager sessionManager,
+            VisionChatService visionChatService,
+            FrameRateLimiter frameRateLimiter) {
         this.sessionManager = sessionManager;
+        this.visionChatService = visionChatService;
+        this.frameRateLimiter = frameRateLimiter;
     }
 
     @Override
@@ -52,8 +61,7 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
         }
 
         switch (type) {
-            case "user_message" ->
-                    session.sendMessage(new TextMessage(WsMessage.error("AI 服务尚未接入，请等待后续 PR")));
+            case "user_message" -> handleUserMessage(session, chatSession, data);
             case "clear_history" -> {
                 chatSession.clearHistory();
                 session.sendMessage(new TextMessage(WsMessage.historyCleared()));
@@ -62,12 +70,31 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
         }
     }
 
+    private void handleUserMessage(WebSocketSession session, ChatSession chatSession, JsonNode data)
+            throws Exception {
+        String text = data.path("text").asText("");
+        if (text.isBlank()) {
+            session.sendMessage(new TextMessage(WsMessage.error("消息内容为空")));
+            return;
+        }
+
+        session.sendMessage(new TextMessage(WsMessage.thinking()));
+        try {
+            VisionChatService.ChatResult result = visionChatService.chat(chatSession, text);
+            session.sendMessage(new TextMessage(
+                    WsMessage.assistantMessage(result.text(), result.usedVision())));
+        } catch (Exception e) {
+            log.error("AI call failed for session {}", chatSession.getId(), e);
+            session.sendMessage(new TextMessage(WsMessage.error("AI 调用失败: " + e.getMessage())));
+        }
+    }
+
     @Override
     public void afterConnectionClosed(WebSocketSession session, CloseStatus status) {
         String chatSessionId = wsToChatSession.remove(session.getId());
         if (chatSessionId != null) {
+            frameRateLimiter.cleanup(chatSessionId);
             sessionManager.remove(chatSessionId);
         }
-        log.info("WebSocket disconnected: {}", session.getId());
     }
 }
