@@ -8,6 +8,7 @@ public class SeeTalkProperties {
     private String corsOrigins = "http://localhost:5173,http://127.0.0.1:5173";
     private int maxImageWidth = 640;
     private int maxImageHeight = 480;
+    private int maxFramesPerMinute = 12;
 
     public int getMaxImageWidth() {
         return maxImageWidth;
@@ -23,6 +24,14 @@ public class SeeTalkProperties {
 
     public void setMaxImageHeight(int maxImageHeight) {
         this.maxImageHeight = maxImageHeight;
+    }
+
+    public int getMaxFramesPerMinute() {
+        return maxFramesPerMinute;
+    }
+
+    public void setMaxFramesPerMinute(int maxFramesPerMinute) {
+        this.maxFramesPerMinute = maxFramesPerMinute;
     }
 
     public String getCorsOrigins() {
