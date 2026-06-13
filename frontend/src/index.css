@@ -7,17 +7,28 @@
 }
 
 :root {
-  --bg: #0f1419;
-  --surface: #1a2332;
-  --surface-hover: #243044;
-  --border: #2d3a4f;
-  --text: #e8edf4;
+  --bg: #0b0f14;
+  --bg-elevated: #111820;
+  --surface: rgba(22, 30, 42, 0.88);
+  --surface-solid: #161e2a;
+  --surface-hover: #1e2a3a;
+  --surface-muted: rgba(15, 20, 28, 0.6);
+  --border: rgba(148, 163, 184, 0.12);
+  --border-strong: rgba(148, 163, 184, 0.2);
+  --text: #eef2f7;
   --text-muted: #8b9cb3;
-  --primary: #3b82f6;
-  --primary-hover: #2563eb;
-  --success: #22c55e;
-  --danger: #ef4444;
-  --radius: 12px;
+  --text-subtle: #64748b;
+  --primary: #4f8ff7;
+  --primary-hover: #3b7de8;
+  --primary-soft: rgba(79, 143, 247, 0.14);
+  --primary-glow: rgba(79, 143, 247, 0.25);
+  --success: #34d399;
+  --danger: #f87171;
+  --radius: 14px;
+  --radius-sm: 10px;
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.24);
+  --shadow-md: 0 8px 24px rgba(0, 0, 0, 0.28);
+  --shadow-lg: 0 16px 48px rgba(0, 0, 0, 0.32);
 }
 
 html,
@@ -27,13 +38,27 @@ body,
 }
 
 body {
-  font-family: system-ui, -apple-system, sans-serif;
-  background: var(--bg);
+  font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+  background:
+    radial-gradient(ellipse 80% 50% at 50% -20%, rgba(79, 143, 247, 0.12), transparent),
+    radial-gradient(ellipse 60% 40% at 100% 100%, rgba(52, 211, 153, 0.06), transparent),
+    var(--bg);
   color: var(--text);
+  -webkit-font-smoothing: antialiased;
 }
 
 button {
   font-family: inherit;
   cursor: pointer;
   border: none;
+}
+
+input {
+  font-family: inherit;
+}
+
+input:focus-visible,
+button:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
 }
