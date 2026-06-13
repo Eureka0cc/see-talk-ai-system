@@ -3,6 +3,7 @@ import { ChatPanel } from "./components/ChatPanel";
 import { ControlBar } from "./components/ControlBar";
 import { VideoPanel } from "./components/VideoPanel";
 import { useCamera } from "./hooks/useCamera";
+import { useSpeechSynthesis } from "./hooks/useSpeechSynthesis";
 import { useVoiceActivity } from "./hooks/useVoiceActivity";
 import { useWebSocket } from "./hooks/useWebSocket";
 import type { ChatMessage, WsIncoming } from "./types";
@@ -18,15 +19,11 @@ export default function App() {
   const [isSessionActive, setIsSessionActive] = useState(false);
   const isSessionActiveRef = useRef(false);
   const sendRef = useRef<(p: Record<string, unknown>) => boolean>(() => false);
+  const sendMessageRef = useRef<(text: string) => void>(() => {});
   const captureFrameRef = useRef<() => string | null>(() => null);
   const camera = useCamera();
+  const tts = useSpeechSynthesis();
   captureFrameRef.current = camera.captureFrame;
-
-  const voice = useVoiceActivity({
-    onSpeechEnd: (text) => {
-      if (isSessionActiveRef.current) sendMessage(text);
-    },
-  });
 
   const sendMessage = useCallback((text: string) => {
     if (!text.trim()) return;
@@ -34,6 +31,13 @@ export default function App() {
     sendRef.current({ type: "user_message", text: text.trim(), image: captureFrameRef.current() });
     setIsThinking(true);
   }, []);
+  sendMessageRef.current = sendMessage;
+
+  const voice = useVoiceActivity({
+    onSpeechEnd: (text) => {
+      if (isSessionActiveRef.current) sendMessageRef.current(text);
+    },
+  });
 
   const handleWsMessage = useCallback((data: WsIncoming) => {
     switch (data.type) {
@@ -46,6 +50,7 @@ export default function App() {
           id: uid(), role: "assistant", text: data.text ?? "",
           usedVision: data.used_vision, timestamp: Date.now(),
         }]);
+        if (data.text) tts.speak(data.text);
         break;
       case "history_cleared":
         setMessages([]);
@@ -56,7 +61,7 @@ export default function App() {
         setMessages((prev) => [...prev, { id: uid(), role: "system", text: data.message ?? "错误", timestamp: Date.now() }]);
         break;
     }
-  }, []);
+  }, [tts]);
 
   const { status, send: wsSend } = useWebSocket(handleWsMessage);
   sendRef.current = wsSend;
@@ -71,10 +76,11 @@ export default function App() {
   const stopSession = useCallback(() => {
     camera.stop();
     voice.stop();
+    tts.stop();
     isSessionActiveRef.current = false;
     setIsSessionActive(false);
     setIsThinking(false);
-  }, [camera, voice]);
+  }, [camera, voice, tts]);
 
   const clearHistory = useCallback(() => {
     wsSend({ type: "clear_history" });
