@@ -7,21 +7,23 @@ import org.springframework.ai.chat.messages.UserMessage;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.UUID;
 
 public class ChatSession {
 
-    private final String id;
+    private final Long id;
     private final List<Message> messages = new ArrayList<>();
     private String lastImageHash;
     private final Instant createdAt = Instant.now();
     private Instant lastActive = Instant.now();
 
-    public ChatSession() {
-        this.id = UUID.randomUUID().toString();
+    public ChatSession(Long id) {
+        if (id == null) {
+            throw new IllegalArgumentException("session id must not be null");
+        }
+        this.id = id;
     }
 
-    public String getId() {
+    public Long getId() {
         return id;
     }
 
@@ -47,6 +49,15 @@ public class ChatSession {
 
     public void touch() {
         this.lastActive = Instant.now();
+    }
+
+    public void setLastActive(Instant lastActive) {
+        this.lastActive = lastActive;
+    }
+
+    public void replaceMessages(List<Message> messages) {
+        this.messages.clear();
+        this.messages.addAll(messages);
     }
 
     public void addUserMessage(String text) {
