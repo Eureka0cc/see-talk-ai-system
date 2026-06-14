@@ -16,7 +16,7 @@ import "./App.css";
 type MainTab = "live" | "history";
 const IMAGE_MIN_INTERVAL_MS = 3000;
 const VISION_REQUEST_REGEX =
-  /看到什么|看到了吗|你看到|帮我看看|帮我看一下|画面|镜头|摄像头|脸上|穿着|身后|旁边|手里|这是什么|那是什么|这个是什么|那个是什么|这个呢|那个呢|什么颜色|长什么样|好不好看|这边|那边/;
+  /看到什么|看到了吗|你看到|帮我看看|帮我看一下|画面|镜头|摄像头|图像|图片|照片|这张|那张|脸上|穿着|身后|旁边|手里|在干嘛|在做什么|在干什么|做什么|干什么|干嘛|看出|这是什么|那是什么|这个是什么|那个是什么|这个呢|那个呢|什么颜色|长什么样|好不好看|这边|那边/;
 
 function uid() {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -46,6 +46,7 @@ export default function App() {
   const activeTtsMessageIdRef = useRef<string | null>(null);
   const ttsStartTimeRef = useRef(0);
   const isTtsSpeakingRef = useRef(false);
+  const isStreamingRef = useRef(false);
   const stopTtsRef = useRef<() => void>(() => {});
   const setRecognitionSuppressedRef = useRef<(enabled: boolean) => void>(() => {});
   const lastImageSentTimeRef = useRef(0);
@@ -104,14 +105,22 @@ export default function App() {
   sendMessageRef.current = sendMessage;
 
   const handleSpeechStart = useCallback(() => {
-    if (!isTtsSpeakingRef.current) return;
-    if (Date.now() - ttsStartTimeRef.current < 300) return;
+    const streamingId = streamingMessageIdRef.current;
+    const ttsId = activeTtsMessageIdRef.current;
+    const canInterruptTts =
+      isTtsSpeakingRef.current && Date.now() - ttsStartTimeRef.current >= 300;
+    const canInterruptStream = isStreamingRef.current && streamingId != null;
 
-    const interruptedMessageId = activeTtsMessageIdRef.current ?? streamingMessageIdRef.current;
-    stopTtsRef.current();
-    isTtsSpeakingRef.current = false;
-    activeTtsMessageIdRef.current = null;
-    setRecognitionSuppressedRef.current(false);
+    if (!canInterruptTts && !canInterruptStream) return;
+
+    const interruptedMessageId = canInterruptTts ? (ttsId ?? streamingId) : streamingId;
+
+    if (canInterruptTts) {
+      stopTtsRef.current();
+      isTtsSpeakingRef.current = false;
+      activeTtsMessageIdRef.current = null;
+      setRecognitionSuppressedRef.current(false);
+    }
 
     if (!interruptedMessageId) return;
     setMessages((prev) =>
@@ -169,6 +178,7 @@ export default function App() {
         const messageId = data.message_id ?? uid();
         streamingMessageIdRef.current = messageId;
         streamingBufferRef.current.delete(messageId);
+        isStreamingRef.current = true;
         setIsStreaming(true);
         setIsThinking(false);
         setMessages((prev) => [
@@ -218,6 +228,7 @@ export default function App() {
           );
         });
         streamingBufferRef.current.clear();
+        isStreamingRef.current = false;
         setIsStreaming(false);
         setIsThinking(false);
         let shouldSpeak = Boolean(data.text);
@@ -281,6 +292,7 @@ export default function App() {
       case "history_cleared":
         streamingBufferRef.current.clear();
         rafPendingRef.current = false;
+        isStreamingRef.current = false;
         setIsStreaming(false);
         setMessages([]);
         setIsThinking(false);
@@ -288,6 +300,7 @@ export default function App() {
       case "error": {
         streamingBufferRef.current.clear();
         rafPendingRef.current = false;
+        isStreamingRef.current = false;
         setIsStreaming(false);
         setIsThinking(false);
         const failedStreamId = streamingMessageIdRef.current;
@@ -295,7 +308,10 @@ export default function App() {
         if (failedStreamId) {
           setMessages((prev) => prev.filter((msg) => msg.id !== failedStreamId));
         }
-        setChatError(data.message ?? "发生错误，请重试");
+        const errorMessage = data.message ?? "发生错误，请重试";
+        if (errorMessage !== "请等待当前回复完成") {
+          setChatError(errorMessage);
+        }
         break;
       }
     }
