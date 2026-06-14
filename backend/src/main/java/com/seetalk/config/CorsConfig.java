@@ -23,8 +23,15 @@ public class CorsConfig {
     public CorsFilter corsFilter() {
         CorsConfiguration config = new CorsConfiguration();
         config.setAllowCredentials(true);
+        config.addAllowedOriginPattern("http://localhost:*");
+        config.addAllowedOriginPattern("http://127.0.0.1:*");
+        config.addAllowedOriginPattern("http://192.168.*.*:*");
+        config.addAllowedOriginPattern("http://10.*.*.*:*");
+        config.addAllowedOriginPattern("https://localhost:*");
+        config.addAllowedOriginPattern("https://127.0.0.1:*");
         Arrays.stream(properties.getCorsOriginArray())
                 .map(String::trim)
+                .filter(origin -> !origin.isBlank())
                 .forEach(config::addAllowedOrigin);
         config.addAllowedHeader("*");
         config.addAllowedMethod("*");
