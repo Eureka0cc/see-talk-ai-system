@@ -4,9 +4,11 @@
 
 ## Demo 视频
 
-> 待上传至 Bilibili 后更新链接（PR-14）
+Bilibili 演示视频（待录制上传后替换为真实链接）：
 
-`[Demo 视频链接占位]`
+https://www.bilibili.com/video/BVxxxxxxxx
+
+> 视频需包含旁白讲解，覆盖摄像头、语音对话、视觉理解、成本控制等核心功能。
 
 ## 功能特性
 
