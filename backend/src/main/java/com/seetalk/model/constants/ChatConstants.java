@@ -45,8 +45,9 @@ public final class ChatConstants {
     public static final List<String> VISION_REQUEST_PATTERNS = List.of(
             "看到什么", "看到了吗", "你看到", "你看到了",
             "帮我看看", "帮我看一下", "看一下画面", "看一下镜头",
-            "画面", "镜头", "摄像头",
+            "画面", "镜头", "摄像头", "图像", "图片", "照片", "这张", "那张",
             "我脸上", "我的脸上", "我穿", "我身后", "我旁边", "我手里",
+            "在干嘛", "在做什么", "在干什么", "做什么", "干什么", "干嘛", "看出",
             "这是什么", "那个是什么", "这个是什么", "那是什么",
             "这个呢", "那个呢", "这边", "那边", "前面", "后面",
             "什么颜色", "长什么样", "好不好看");
@@ -62,9 +63,16 @@ public final class ChatConstants {
     /** 未指定时间范围时的默认回溯天数 */
     public static final int DEFAULT_LOOKBACK_DAYS = 30;
 
+    // ── 历史检索 ────────────────────────────────────────
+    /** 当前会话热记忆 + 近期落库消息合并检索时的上限 */
+    public static final int HISTORY_RECALL_MAX_MESSAGES = 20;
+
     // ── 历史工具响应文案 ────────────────────────────────
     public static final String HISTORY_NO_MATCH = "没有查到匹配的历史聊天消息。";
     public static final String HISTORY_HEADER = "历史聊天消息（按时间从近到远）：";
+    public static final String HISTORY_RECALL_HEADER =
+            "近期聊天消息（含当前会话，供归纳回答；按时间从近到远）：";
+    public static final String HISTORY_CURRENT_SESSION_TAG = "（当前会话）";
     public static final String HISTORY_NO_SESSIONS = "当前用户还没有历史会话。";
     public static final String HISTORY_RECENT_HEADER = "最近历史会话：";
     public static final String HISTORY_SESSION_LABEL_PREFIX = "历史会话#";

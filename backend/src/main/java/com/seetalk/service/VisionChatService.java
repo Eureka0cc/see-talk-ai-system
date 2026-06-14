@@ -9,9 +9,11 @@ import com.seetalk.model.constants.ChatConstants;
 import com.seetalk.model.constants.PromptConstants;
 import com.seetalk.rate.FrameRateLimiter;
 import com.seetalk.rate.ImageDeduplicator;
+import com.seetalk.session.ChatRequestContext;
 import com.seetalk.session.ChatSession;
 import com.seetalk.session.ChatSessionManager;
 import com.seetalk.tool.ChatHistoryTools;
+import com.seetalk.tool.WebSearchTools;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.prompt.ChatOptions;
 import org.springframework.ai.chat.messages.AssistantMessage;
@@ -23,12 +25,14 @@ import org.springframework.core.io.ByteArrayResource;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.util.MimeTypeUtils;
+import reactor.core.Disposable;
 import reactor.core.publisher.Flux;
 
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.time.ZonedDateTime;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
@@ -48,9 +52,17 @@ public class VisionChatService {
     private final ChatPersistenceService persistenceService;
     private final ChatSessionManager sessionManager;
     private final ChatHistoryTools chatHistoryTools;
+    private final WebSearchTools webSearchTools;
     private final PromptSafetyGuard promptSafetyGuard;
     private final String apiKey;
     private final ChatOptions dashScopeOptions;
+    private final ConcurrentHashMap<Long, ActiveStream> activeStreams = new ConcurrentHashMap<>();
+
+    private static final class ActiveStream {
+        private final AtomicBoolean cancelled = new AtomicBoolean(false);
+        private final StringBuilder rawText = new StringBuilder();
+        private volatile Disposable subscription;
+    }
 
     public VisionChatService(
             ChatClient chatClient,
@@ -61,6 +73,7 @@ public class VisionChatService {
             ChatPersistenceService persistenceService,
             ChatSessionManager sessionManager,
             ChatHistoryTools chatHistoryTools,
+            WebSearchTools webSearchTools,
             PromptSafetyGuard promptSafetyGuard,
             @Value("${spring.ai.dashscope.api-key:}") String apiKey,
             @Value("${spring.ai.dashscope.chat.options.model:qwen3-vl-flash}") String model) {
@@ -72,6 +85,7 @@ public class VisionChatService {
         this.persistenceService = persistenceService;
         this.sessionManager = sessionManager;
         this.chatHistoryTools = chatHistoryTools;
+        this.webSearchTools = webSearchTools;
         this.promptSafetyGuard = promptSafetyGuard;
         this.apiKey = apiKey;
         this.dashScopeOptions = DashScopeChatOptions.builder()
@@ -106,7 +120,7 @@ public class VisionChatService {
         boolean hasImage = imageBase64 != null && !imageBase64.isBlank();
 
         if (hasImage) {
-            if (frameRateLimiter.allow(session.getId())) {
+            if (frameRateLimiter.allow(session.getId()) || userAsksForVision) {
                 long compressStart = System.currentTimeMillis();
                 compressedImage = imageProcessService.compressBase64Image(imageBase64);
                 long compressMs = System.currentTimeMillis() - compressStart;
@@ -160,33 +174,73 @@ public class VisionChatService {
         return new UserTurnContext(rawUserText, useVision);
     }
 
+    public void discardActiveStream(Long sessionId) {
+        ActiveStream active = activeStreams.remove(sessionId);
+        if (active == null) {
+            return;
+        }
+        active.cancelled.set(true);
+        Disposable subscription = active.subscription;
+        if (subscription != null && !subscription.isDisposed()) {
+            subscription.dispose();
+        }
+    }
+
+    /**
+     * 取消进行中的流式回复，撤回未完成的 user 轮次，返回已生成的部分文本。
+     */
+    public String cancelActiveStream(ChatSession session) {
+        ActiveStream active = activeStreams.remove(session.getId());
+        if (active == null) {
+            return "";
+        }
+        active.cancelled.set(true);
+        Disposable subscription = active.subscription;
+        if (subscription != null && !subscription.isDisposed()) {
+            subscription.dispose();
+        }
+        session.rollbackPendingUserTurn();
+        return promptSafetyGuard.sanitizeAssistantOutput(active.rawText.toString());
+    }
+
+    public boolean hasActiveStream(Long sessionId) {
+        return activeStreams.containsKey(sessionId);
+    }
+
     public void streamResponse(
             ChatSession session,
             Consumer<String> onChunk,
             Consumer<String> onComplete,
             Consumer<Throwable> onError) {
+        sessionManager.save(session);
         List<Message> history = buildHistory(session);
-        StringBuilder rawText = new StringBuilder();
         StringBuilder pendingBuffer = new StringBuilder();
         long start = System.currentTimeMillis();
         AtomicBoolean firstChunk = new AtomicBoolean(true);
+        ActiveStream active = new ActiveStream();
+        activeStreams.put(session.getId(), active);
 
         log.info("AI stream starting session={} historyMessages={}", session.getId(), history.size());
 
         String dynamicSystemPrompt = buildDynamicSystemPrompt();
+        Map<String, Object> toolContext = Map.of(ChatRequestContext.SESSION_ID_KEY, session.getId());
         Flux<String> flux = chatClient.prompt()
                 .system(dynamicSystemPrompt)
                 .messages(history)
                 .options(dashScopeOptions)
-                .tools(chatHistoryTools)
+                .toolContext(toolContext)
+                .tools(chatHistoryTools, webSearchTools)
                 .stream()
                 .content();
 
-        flux.doOnNext(chunk -> {
+        active.subscription = flux.doOnNext(chunk -> {
+                    if (active.cancelled.get()) {
+                        return;
+                    }
                     if (firstChunk.compareAndSet(true, false)) {
                         log.info("AI first token session={} ttft={}ms", session.getId(), System.currentTimeMillis() - start);
                     }
-                    rawText.append(chunk);
+                    active.rawText.append(chunk);
                     pendingBuffer.append(chunk);
                     if (pendingBuffer.length() > ChatConstants.STREAM_GUARD_BUFFER_CHARS) {
                         int flushLength = pendingBuffer.length() - ChatConstants.STREAM_GUARD_BUFFER_CHARS;
@@ -198,17 +252,27 @@ public class VisionChatService {
                     }
                 })
                 .doOnComplete(() -> {
+                    activeStreams.remove(session.getId());
+                    if (active.cancelled.get()) {
+                        log.info("AI stream cancelled before complete session={}", session.getId());
+                        return;
+                    }
                     String safeTail = promptSafetyGuard.sanitizeAssistantOutput(pendingBuffer.toString());
                     if (safeTail != null && !safeTail.isBlank()) {
                         onChunk.accept(safeTail);
                     }
-                    String response = promptSafetyGuard.sanitizeAssistantOutput(rawText.toString());
+                    String response = promptSafetyGuard.sanitizeAssistantOutput(active.rawText.toString());
                     session.addAssistantMessage(response);
                     log.info("AI stream complete session={} total={}ms chars={}",
                             session.getId(), System.currentTimeMillis() - start, response.length());
                     onComplete.accept(response);
                 })
                 .doOnError(error -> {
+                    activeStreams.remove(session.getId());
+                    if (active.cancelled.get()) {
+                        log.info("AI stream cancelled with error session={}", session.getId());
+                        return;
+                    }
                     log.error("AI stream error session={} elapsed={}ms", session.getId(),
                             System.currentTimeMillis() - start, error);
                     onError.accept(error);
@@ -218,14 +282,17 @@ public class VisionChatService {
 
     public ChatResult chat(ChatSession session, String text, String imageBase64) {
         UserTurnContext turn = prepareUserTurn(session, text, imageBase64);
+        sessionManager.save(session);
 
         List<Message> history = buildHistory(session);
         String dynamicSystemPrompt = buildDynamicSystemPrompt();
+        Map<String, Object> toolContext = Map.of(ChatRequestContext.SESSION_ID_KEY, session.getId());
         String response = chatClient.prompt()
                 .system(dynamicSystemPrompt)
                 .messages(history)
                 .options(dashScopeOptions)
-                .tools(chatHistoryTools)
+                .toolContext(toolContext)
+                .tools(chatHistoryTools, webSearchTools)
                 .call()
                 .content();
         String safeResponse = promptSafetyGuard.sanitizeAssistantOutput(response);
@@ -234,6 +301,11 @@ public class VisionChatService {
         persistenceService.persistTurn(session.getId(), turn.rawUserText(), safeResponse, turn.usedVision());
         sessionManager.save(session);
         return new ChatResult(safeResponse, turn.usedVision());
+    }
+
+    public void finalizeTurn(ChatSession session, String userText, String assistantText, boolean usedVision) {
+        persistenceService.persistTurn(session.getId(), userText, assistantText, usedVision);
+        sessionManager.save(session);
     }
 
     public void finalizeTurnAsync(ChatSession session, String userText, String assistantText, boolean usedVision) {
@@ -270,12 +342,17 @@ public class VisionChatService {
         }
         boolean hasDeicticReference = normalized.contains("这个")
                 || normalized.contains("那个")
+                || normalized.contains("这张")
+                || normalized.contains("那张")
                 || normalized.contains("这边")
                 || normalized.contains("那边");
         boolean hasQuestionForObject = normalized.contains("是什么")
                 || normalized.contains("啥")
                 || normalized.contains("怎么样")
-                || normalized.contains("好不好看");
+                || normalized.contains("好不好看")
+                || normalized.contains("干嘛")
+                || normalized.contains("做什么")
+                || normalized.contains("干什么");
         return hasDeicticReference && hasQuestionForObject;
     }
 }

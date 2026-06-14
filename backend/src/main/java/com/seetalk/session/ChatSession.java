@@ -81,4 +81,16 @@ public class ChatSession {
             messages.subList(0, messages.size() - maxMessages).clear();
         }
     }
+
+    /** 撤回本轮尚未得到 assistant 回复的 user 消息（用于语音打断）。 */
+    public void rollbackPendingUserTurn() {
+        if (messages.isEmpty()) {
+            return;
+        }
+        Message last = messages.get(messages.size() - 1);
+        if (last instanceof UserMessage) {
+            messages.remove(messages.size() - 1);
+            touch();
+        }
+    }
 }

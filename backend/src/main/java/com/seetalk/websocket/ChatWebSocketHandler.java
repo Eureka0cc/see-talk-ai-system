@@ -35,6 +35,8 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
 
     private static final Logger log = LoggerFactory.getLogger(ChatWebSocketHandler.class);
 
+    private record ActiveTurn(String messageId, boolean usedVision) {}
+
     private final ChatSessionManager sessionManager;
     private final VisionChatService visionChatService;
     private final ChatPersistenceService persistenceService;
@@ -42,6 +44,7 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
     private final SeeTalkProperties properties;
     private final Map<String, Long> wsToChatSession = new ConcurrentHashMap<>();
     private final Map<Long, Boolean> streamingSessions = new ConcurrentHashMap<>();
+    private final Map<Long, ActiveTurn> activeTurns = new ConcurrentHashMap<>();
     private final Map<String, WebSocketSession> decoratedSessions = new ConcurrentHashMap<>();
 
     public ChatWebSocketHandler(
@@ -90,12 +93,19 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
             case WebSocketConstants.MSG_TYPE_USER_MESSAGE ->
                     handleUserMessage(session, chatSession, data);
             case WebSocketConstants.MSG_TYPE_CLEAR_HISTORY -> {
+                if (Boolean.TRUE.equals(streamingSessions.get(chatSession.getId()))) {
+                    sendSafe(session, WsMessage.error(WebSocketConstants.WAIT_RESPONSE_MSG));
+                    return;
+                }
                 chatSession.clearHistory();
+                frameRateLimiter.cleanup(chatSession.getId());
                 try {
                     persistenceService.clearSessionMessages(chatSession.getId());
                 } catch (Exception e) {
                     log.error("Failed to clear persisted messages for session {}",
                             chatSession.getId(), e);
+                    sendSafe(session, WsMessage.error("清空记录失败，请稍后重试"));
+                    return;
                 }
                 sessionManager.save(chatSession);
                 session.sendMessage(new TextMessage(WsMessage.historyCleared()));
@@ -108,9 +118,10 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
     private void handleUserMessage(WebSocketSession session, ChatSession chatSession, JsonNode data)
             throws Exception {
         long start = System.currentTimeMillis();
+        WebSocketSession safeSession = decorateSession(session);
+
         if (Boolean.TRUE.equals(streamingSessions.get(chatSession.getId()))) {
-            sendSafe(session, WsMessage.error(WebSocketConstants.WAIT_RESPONSE_MSG));
-            return;
+            interruptActiveTurn(chatSession, safeSession);
         }
 
         String text = data.path(WebSocketConstants.FIELD_TEXT).asText("");
@@ -136,19 +147,19 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
             long prepareMs = System.currentTimeMillis() - start;
 
             String messageId = UUID.randomUUID().toString();
-            WebSocketSession safeSession = decorateSession(session);
-
             sendSafe(safeSession, WsMessage.assistantStart(messageId, turn.usedVision()));
             log.info("Assistant stream started session={} messageId={} useVision={} prepare={}ms",
                     chatSession.getId(), messageId, turn.usedVision(), prepareMs);
 
             streamingSessions.put(chatSession.getId(), true);
+            activeTurns.put(chatSession.getId(), new ActiveTurn(messageId, turn.usedVision()));
 
             visionChatService.streamResponse(
                     chatSession,
                     chunk -> sendSafe(safeSession, WsMessage.assistantDelta(messageId, chunk)),
                     fullText -> {
-                        visionChatService.finalizeTurnAsync(
+                        activeTurns.remove(chatSession.getId());
+                        visionChatService.finalizeTurn(
                                 chatSession, turn.rawUserText(), fullText, turn.usedVision());
                         streamingSessions.remove(chatSession.getId());
                         sendSafe(safeSession, WsMessage.assistantDone(messageId, fullText, turn.usedVision()));
@@ -156,16 +167,30 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
                                 chatSession.getId(), messageId, System.currentTimeMillis() - start, fullText.length());
                     },
                     error -> {
+                        activeTurns.remove(chatSession.getId());
                         log.error("AI stream failed session={} elapsed={}ms",
                                 chatSession.getId(), System.currentTimeMillis() - start, error);
                         sendSafe(safeSession, WsMessage.error(WebSocketConstants.AI_ERROR_PREFIX + error.getMessage()));
                         streamingSessions.remove(chatSession.getId());
                     });
         } catch (Exception e) {
+            activeTurns.remove(chatSession.getId());
             log.error("AI call failed session={} elapsed={}ms",
                     chatSession.getId(), System.currentTimeMillis() - start, e);
             sendSafe(session, WsMessage.error(WebSocketConstants.AI_ERROR_PREFIX + e.getMessage()));
             streamingSessions.remove(chatSession.getId());
+        }
+    }
+
+    private void interruptActiveTurn(ChatSession chatSession, WebSocketSession safeSession) {
+        ActiveTurn activeTurn = activeTurns.remove(chatSession.getId());
+        String partialText = visionChatService.cancelActiveStream(chatSession);
+        streamingSessions.remove(chatSession.getId());
+        if (activeTurn != null) {
+            sendSafe(safeSession, WsMessage.assistantDone(
+                    activeTurn.messageId(), partialText, activeTurn.usedVision()));
+            log.info("Interrupted active stream session={} messageId={} partialChars={}",
+                    chatSession.getId(), activeTurn.messageId(), partialText.length());
         }
     }
 
@@ -261,6 +286,13 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
                 session.getId(), chatSessionId, status);
         if (chatSessionId != null) {
             streamingSessions.remove(chatSessionId);
+            activeTurns.remove(chatSessionId);
+            ChatSession chatSession = sessionManager.get(chatSessionId);
+            if (chatSession != null) {
+                visionChatService.cancelActiveStream(chatSession);
+            } else {
+                visionChatService.discardActiveStream(chatSessionId);
+            }
             frameRateLimiter.cleanup(chatSessionId);
             sessionManager.remove(chatSessionId);
         }
