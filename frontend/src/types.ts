@@ -8,9 +8,13 @@ export interface ChatMessage {
 
 export type ConnectionStatus = "disconnected" | "connecting" | "connected" | "error";
 
+export type SessionPhase = "idle" | "active" | "ended";
+
 export interface WsIncoming {
   type: string;
   text?: string;
+  delta?: string;
+  message_id?: string;
   message?: string;
   session_id?: string;
   used_vision?: boolean;

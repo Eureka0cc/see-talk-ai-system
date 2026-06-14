@@ -38,7 +38,7 @@ export function useVoiceActivity(options: UseVoiceActivityOptions = {}) {
     setIsSpeaking(false);
   }, []);
 
-  const start = useCallback(async () => {
+  const start = useCallback(async (): Promise<boolean> => {
     try {
       setError(null);
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -126,8 +126,10 @@ export function useVoiceActivity(options: UseVoiceActivityOptions = {}) {
 
       setIsListening(true);
       rafRef.current = requestAnimationFrame(checkLevel);
+      return true;
     } catch (e) {
       setError(e instanceof Error ? e.message : "无法访问麦克风");
+      return false;
     }
   }, []);
 
