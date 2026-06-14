@@ -48,7 +48,7 @@ public class ImageProcessService {
                 int newH = (int) (h * scale);
                 scaled = new BufferedImage(newW, newH, BufferedImage.TYPE_INT_RGB);
                 Graphics2D g = scaled.createGraphics();
-                g.drawImage(img.getScaledInstance(newW, newH, Image.SCALE_SMOOTH), 0, 0, null);
+                g.drawImage(img.getScaledInstance(newW, newH, Image.SCALE_FAST), 0, 0, null);
                 g.dispose();
             } else if (scaled.getType() != BufferedImage.TYPE_INT_RGB) {
                 BufferedImage rgb = new BufferedImage(w, h, BufferedImage.TYPE_INT_RGB);

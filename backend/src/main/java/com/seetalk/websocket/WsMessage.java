@@ -10,10 +10,10 @@ public final class WsMessage {
 
     private WsMessage() {}
 
-    public static String session(String sessionId, String message) {
+    public static String session(Long sessionId, String message) {
         ObjectNode node = MAPPER.createObjectNode();
         node.put("type", "session");
-        node.put("session_id", sessionId);
+        node.put("session_id", String.valueOf(sessionId));
         node.put("message", message);
         return node.toString();
     }
@@ -27,6 +27,31 @@ public final class WsMessage {
     public static String assistantMessage(String text, boolean usedVision) {
         ObjectNode node = MAPPER.createObjectNode();
         node.put("type", "assistant_message");
+        node.put("text", text);
+        node.put("used_vision", usedVision);
+        return node.toString();
+    }
+
+    public static String assistantStart(String messageId, boolean usedVision) {
+        ObjectNode node = MAPPER.createObjectNode();
+        node.put("type", "assistant_start");
+        node.put("message_id", messageId);
+        node.put("used_vision", usedVision);
+        return node.toString();
+    }
+
+    public static String assistantDelta(String messageId, String delta) {
+        ObjectNode node = MAPPER.createObjectNode();
+        node.put("type", "assistant_delta");
+        node.put("message_id", messageId);
+        node.put("delta", delta);
+        return node.toString();
+    }
+
+    public static String assistantDone(String messageId, String text, boolean usedVision) {
+        ObjectNode node = MAPPER.createObjectNode();
+        node.put("type", "assistant_done");
+        node.put("message_id", messageId);
         node.put("text", text);
         node.put("used_vision", usedVision);
         return node.toString();

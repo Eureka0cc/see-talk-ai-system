@@ -5,27 +5,26 @@ import org.springframework.stereotype.Component;
 
 import java.time.Duration;
 import java.time.Instant;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 
 @Component
 public class ChatSessionManager {
 
-    private final Map<String, ChatSession> sessions = new ConcurrentHashMap<>();
+    private final ChatSessionStore store;
     private final SeeTalkProperties properties;
 
-    public ChatSessionManager(SeeTalkProperties properties) {
+    public ChatSessionManager(ChatSessionStore store, SeeTalkProperties properties) {
+        this.store = store;
         this.properties = properties;
     }
 
-    public ChatSession create() {
-        ChatSession session = new ChatSession();
-        sessions.put(session.getId(), session);
+    public ChatSession create(Long sessionId) {
+        ChatSession session = new ChatSession(sessionId);
+        store.save(session);
         return session;
     }
 
-    public ChatSession get(String sessionId) {
-        ChatSession session = sessions.get(sessionId);
+    public ChatSession get(Long sessionId) {
+        ChatSession session = store.load(sessionId);
         if (session == null) {
             return null;
         }
@@ -37,7 +36,12 @@ public class ChatSessionManager {
         return session;
     }
 
-    public void remove(String sessionId) {
-        sessions.remove(sessionId);
+    public void save(ChatSession session) {
+        store.save(session);
+        store.refreshTtl(session.getId());
+    }
+
+    public void remove(Long sessionId) {
+        store.delete(sessionId);
     }
 }
