@@ -161,18 +161,26 @@ public class ChatPersistenceService {
     }
 
     @Transactional(readOnly = true)
+    public List<ChatMessageEntity> listRecentCurrentUserMessages(
+            LocalDateTime startTime,
+            LocalDateTime endTime,
+            int limit) {
+        int safeLimit = Math.min(Math.max(limit, 1), ChatConstants.HISTORY_RECALL_MAX_MESSAGES);
+        return messageRepository.findRecentVisibleMessagesByUserId(
+                defaultUserId,
+                startTime,
+                endTime,
+                PageRequest.of(0, safeLimit));
+    }
+
+    @Transactional(readOnly = true)
     public boolean sessionExists(Long sessionId) {
         return sessionRepository.existsVisibleByIdAndUserId(sessionId, defaultUserId);
     }
 
     @Transactional
     public void clearSessionMessages(Long sessionId) {
-        List<ChatMessageEntity> messages = messageRepository
-                .findBySessionIdOrderByAuditCreateTimeAsc(sessionId);
-        for (ChatMessageEntity message : messages) {
-            message.setDeleted(true);
-            messageRepository.save(message);
-        }
+        int deleted = messageRepository.softDeleteBySessionId(sessionId);
 
         ChatSessionEntity session = sessionRepository.findById(sessionId).orElse(null);
         if (session != null) {
@@ -181,7 +189,7 @@ public class ChatPersistenceService {
             sessionRepository.save(session);
         }
 
-        log.info("Cleared {} messages for session {}", messages.size(), sessionId);
+        log.info("Soft-deleted {} messages for session {}", deleted, sessionId);
     }
 
     @Transactional

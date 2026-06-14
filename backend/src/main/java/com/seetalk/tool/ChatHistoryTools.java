@@ -4,7 +4,14 @@ import com.seetalk.model.constants.ChatConstants;
 import com.seetalk.model.entity.ChatMessageEntity;
 import com.seetalk.model.entity.ChatSessionEntity;
 import com.seetalk.service.ChatPersistenceService;
+import com.seetalk.session.ChatRequestContext;
+import com.seetalk.session.ChatSession;
+import com.seetalk.session.ChatSessionManager;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.ai.chat.messages.AssistantMessage;
+import org.springframework.ai.chat.messages.Message;
+import org.springframework.ai.chat.messages.UserMessage;
+import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
 import org.springframework.data.domain.Page;
@@ -13,55 +20,63 @@ import org.springframework.stereotype.Component;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
 
 @Slf4j
 @Component
 public class ChatHistoryTools {
 
-    // 时间、历史查询默认值与响应文案见 ChatConstants
-
     private final ChatPersistenceService persistenceService;
+    private final ChatSessionManager sessionManager;
 
-    public ChatHistoryTools(ChatPersistenceService persistenceService) {
+    public ChatHistoryTools(ChatPersistenceService persistenceService, ChatSessionManager sessionManager) {
         this.persistenceService = persistenceService;
+        this.sessionManager = sessionManager;
     }
 
     @Tool(description = """
             Search the current user's chat history. Use when the user asks about past conversations,
             wants to recall something discussed before, or mentions a specific date or time period.
-            Returns summarized matching messages.""")
+            For abstract recall questions (e.g. who/what did I mention, what do I like), returns recent
+            messages from the current session and database for you to summarize — not keyword matching.""")
     public String searchChatHistory(
-            @ToolParam(description = "Keyword or topic to search for; leave empty if user only asks about a date", required = false)
+            @ToolParam(description = "Keyword or topic to search for; leave empty for abstract recall", required = false)
             String query,
             @ToolParam(description = "Natural language time range, e.g. today, yesterday, last week, last 30 days", required = false)
             String timeRange,
             @ToolParam(description = "Max number of messages to return, suggest 5 to 10", required = false)
-            Integer limit) {
+            Integer limit,
+            ToolContext toolContext) {
+        long start = System.currentTimeMillis();
+        Long currentSessionId = resolveSessionId(toolContext);
         TimeWindow window = resolveTimeWindow(blankToDefault(timeRange, query));
         int safeLimit = limit == null ? ChatConstants.DEFAULT_MESSAGE_LIMIT : limit;
-        String normalizedQuery = normalizeQuery(query);
-        List<ChatMessageEntity> messages = persistenceService.searchCurrentUserMessages(
-                normalizedQuery, window.startTime(), window.endTime(), safeLimit);
+        String rawQuery = blankToDefault(query, "");
+        HistorySearchSupportTools.SearchMode mode = HistorySearchSupportTools.resolveMode(rawQuery);
 
-        log.info("Chat history tool search query={} normalizedQuery={} timeRange={} resultCount={}",
-                query, normalizedQuery, timeRange, messages.size());
+        log.info("[Tool:searchChatHistory] invoked query=\"{}\" mode={} sessionId={} timeRange=\"{}\" limit={}",
+                rawQuery, mode, currentSessionId, timeRange, safeLimit);
 
-        if (messages.isEmpty()) {
+        List<HistoryLine> lines = switch (mode) {
+            case ABSTRACT_RECALL -> searchAbstractRecall(currentSessionId, window, safeLimit);
+            case KEYWORD -> searchByKeyword(rawQuery, currentSessionId, window, safeLimit);
+        };
+
+        log.info("[Tool:searchChatHistory] completed results={} elapsed={}ms",
+                lines.size(), System.currentTimeMillis() - start);
+
+        if (lines.isEmpty()) {
             return ChatConstants.HISTORY_NO_MATCH;
         }
 
-        StringBuilder result = new StringBuilder(ChatConstants.HISTORY_HEADER + "\n");
-        for (ChatMessageEntity message : messages) {
-            result.append("- ")
-                    .append(formatTime(message.getCreateTime()))
-                    .append("，")
-                    .append(formatRole(message.getRole()))
-                    .append("：")
-                    .append(truncate(message.getContent(), 180))
-                    .append('\n');
-        }
-        return result.toString();
+        String header = mode == HistorySearchSupportTools.SearchMode.ABSTRACT_RECALL
+                ? ChatConstants.HISTORY_RECALL_HEADER
+                : ChatConstants.HISTORY_HEADER;
+        return formatLines(header, lines);
     }
 
     @Tool(description = """
@@ -71,11 +86,16 @@ public class ChatHistoryTools {
     public String getRecentChatSessions(
             @ToolParam(description = "Max number of sessions to return, suggest 3 to 8", required = false)
             Integer limit) {
+        long start = System.currentTimeMillis();
         int safeLimit = limit == null ? ChatConstants.DEFAULT_SESSION_LIMIT : Math.min(Math.max(limit, 1), 10);
+
+        log.info("[Tool:getRecentChatSessions] invoked limit={}", safeLimit);
+
         Page<ChatSessionEntity> page = persistenceService.listSessions(PageRequest.of(0, safeLimit));
         List<ChatSessionEntity> sessions = page.getContent();
 
-        log.info("Chat history tool recent sessions resultCount={}", sessions.size());
+        log.info("[Tool:getRecentChatSessions] completed results={} elapsed={}ms",
+                sessions.size(), System.currentTimeMillis() - start);
 
         if (sessions.isEmpty()) {
             return ChatConstants.HISTORY_NO_SESSIONS;
@@ -100,12 +120,198 @@ public class ChatHistoryTools {
         return result.toString();
     }
 
-    private TimeWindow resolveTimeWindow(String timeRange) {
-        if (timeRange == null || timeRange.isBlank()) {
-            return lastDays(30);
+    private List<HistoryLine> searchAbstractRecall(Long currentSessionId, TimeWindow window, int limit) {
+        int recallLimit = Math.min(Math.max(limit, ChatConstants.DEFAULT_MESSAGE_LIMIT),
+                ChatConstants.HISTORY_RECALL_MAX_MESSAGES);
+        Map<String, HistoryLine> merged = new LinkedHashMap<>();
+
+        appendHotSessionMessages(merged, currentSessionId, null, recallLimit, true);
+        if (currentSessionId != null) {
+            appendPersistedSessionMessages(merged, currentSessionId, null, recallLimit, true);
+        }
+        appendRecentPersistedMessages(merged, window, recallLimit, currentSessionId != null);
+
+        return trimLines(merged, recallLimit);
+    }
+
+    private List<HistoryLine> searchByKeyword(String rawQuery, Long currentSessionId, TimeWindow window, int limit) {
+        List<String> tokens = HistorySearchSupportTools.extractSearchTokens(rawQuery);
+        String primaryToken = tokens.isEmpty() ? rawQuery.trim() : tokens.get(0);
+        Map<String, HistoryLine> merged = new LinkedHashMap<>();
+
+        appendHotSessionMessages(merged, currentSessionId,
+                content -> matchesKeyword(content, rawQuery, tokens), limit, true);
+        if (currentSessionId != null) {
+            appendPersistedSessionMessages(merged, currentSessionId,
+                    content -> matchesKeyword(content, rawQuery, tokens), limit, true);
         }
 
-        String normalized = timeRange.trim().toLowerCase();
+        List<ChatMessageEntity> keywordHits = persistenceService.searchCurrentUserMessages(
+                primaryToken, window.startTime(), window.endTime(), limit);
+        for (ChatMessageEntity message : keywordHits) {
+            if (matchesKeyword(message.getContent(), rawQuery, tokens)) {
+                addEntityLine(merged, message, currentSessionId != null && currentSessionId.equals(message.getSessionId()));
+            }
+        }
+
+        if (merged.size() < limit && tokens.size() > 1) {
+            for (String token : tokens.subList(1, tokens.size())) {
+                List<ChatMessageEntity> tokenHits = persistenceService.searchCurrentUserMessages(
+                        token, window.startTime(), window.endTime(), limit);
+                for (ChatMessageEntity message : tokenHits) {
+                    addEntityLine(merged, message, currentSessionId != null && currentSessionId.equals(message.getSessionId()));
+                }
+                if (merged.size() >= limit) {
+                    break;
+                }
+            }
+        }
+
+        if (merged.isEmpty()) {
+            List<ChatMessageEntity> recent = persistenceService.listRecentCurrentUserMessages(
+                    window.startTime(), window.endTime(), limit);
+            for (ChatMessageEntity message : recent) {
+                if (matchesKeyword(message.getContent(), rawQuery, tokens)) {
+                    addEntityLine(merged, message, currentSessionId != null && currentSessionId.equals(message.getSessionId()));
+                }
+            }
+        }
+
+        return trimLines(merged, limit);
+    }
+
+    private void appendHotSessionMessages(
+            Map<String, HistoryLine> merged,
+            Long sessionId,
+            java.util.function.Predicate<String> contentFilter,
+            int limit,
+            boolean markCurrentSession) {
+        if (sessionId == null) {
+            return;
+        }
+        ChatSession session = sessionManager.get(sessionId);
+        if (session == null) {
+            return;
+        }
+        List<Message> messages = session.getMessages();
+        int start = Math.max(0, messages.size() - limit);
+        for (int i = messages.size() - 1; i >= start; i--) {
+            Message message = messages.get(i);
+            String role;
+            String content;
+            if (message instanceof UserMessage userMessage) {
+                role = ChatConstants.ROLE_USER;
+                content = userMessage.getText();
+            } else if (message instanceof AssistantMessage assistantMessage) {
+                role = ChatConstants.ROLE_ASSISTANT;
+                content = assistantMessage.getText();
+            } else {
+                continue;
+            }
+            if (contentFilter != null && !contentFilter.test(content)) {
+                continue;
+            }
+            addLine(merged, new HistoryLine(
+                    LocalDateTime.now(ChatConstants.BEIJING_ZONE),
+                    role,
+                    content,
+                    markCurrentSession));
+        }
+    }
+
+    private void appendPersistedSessionMessages(
+            Map<String, HistoryLine> merged,
+            Long sessionId,
+            java.util.function.Predicate<String> contentFilter,
+            int limit,
+            boolean markCurrentSession) {
+        List<ChatMessageEntity> messages = persistenceService.listRecentMessagesForContext(sessionId, limit);
+        for (int i = messages.size() - 1; i >= 0; i--) {
+            ChatMessageEntity message = messages.get(i);
+            if (contentFilter != null && !contentFilter.test(message.getContent())) {
+                continue;
+            }
+            addEntityLine(merged, message, markCurrentSession);
+        }
+    }
+
+    private void appendRecentPersistedMessages(
+            Map<String, HistoryLine> merged,
+            TimeWindow window,
+            int limit,
+            boolean markCurrentSession) {
+        List<ChatMessageEntity> messages = persistenceService.listRecentCurrentUserMessages(
+                window.startTime(), window.endTime(), limit);
+        for (ChatMessageEntity message : messages) {
+            addEntityLine(merged, message, markCurrentSession);
+        }
+    }
+
+    private void addEntityLine(Map<String, HistoryLine> merged, ChatMessageEntity message, boolean currentSession) {
+        addLine(merged, new HistoryLine(message.getCreateTime(), message.getRole(), message.getContent(), currentSession));
+    }
+
+    private void addLine(Map<String, HistoryLine> merged, HistoryLine line) {
+        merged.putIfAbsent(line.dedupeKey(), line);
+    }
+
+    private List<HistoryLine> trimLines(Map<String, HistoryLine> merged, int limit) {
+        return new ArrayList<>(merged.values()).stream().limit(limit).toList();
+    }
+
+    private boolean matchesKeyword(String content, String rawQuery, List<String> tokens) {
+        if (content == null || content.isBlank()) {
+            return false;
+        }
+        String haystack = content.toLowerCase(Locale.ROOT);
+        if (!rawQuery.isBlank() && haystack.contains(rawQuery.trim().toLowerCase(Locale.ROOT))) {
+            return true;
+        }
+        return HistorySearchSupportTools.matchesAnyToken(content, tokens);
+    }
+
+    private Long resolveSessionId(ToolContext toolContext) {
+        if (toolContext == null || toolContext.getContext() == null) {
+            return null;
+        }
+        Object value = toolContext.getContext().get(ChatRequestContext.SESSION_ID_KEY);
+        if (value instanceof Long longValue) {
+            return longValue;
+        }
+        if (value instanceof Number number) {
+            return number.longValue();
+        }
+        if (value instanceof String text && !text.isBlank()) {
+            try {
+                return Long.parseLong(text.trim());
+            } catch (NumberFormatException ignored) {
+                return null;
+            }
+        }
+        return null;
+    }
+
+    private String formatLines(String header, List<HistoryLine> lines) {
+        StringBuilder result = new StringBuilder(header).append('\n');
+        for (HistoryLine line : lines) {
+            result.append("- ")
+                    .append(formatTime(line.time()))
+                    .append(line.currentSession() ? ChatConstants.HISTORY_CURRENT_SESSION_TAG : "")
+                    .append("，")
+                    .append(formatRole(line.role()))
+                    .append("：")
+                    .append(truncate(line.content(), 180))
+                    .append('\n');
+        }
+        return result.toString();
+    }
+
+    private TimeWindow resolveTimeWindow(String timeRange) {
+        if (timeRange == null || timeRange.isBlank()) {
+            return lastDays(ChatConstants.DEFAULT_LOOKBACK_DAYS);
+        }
+
+        String normalized = timeRange.trim().toLowerCase(Locale.ROOT);
         LocalDate today = LocalDate.now(ChatConstants.BEIJING_ZONE);
         if (normalized.contains("今天") || normalized.contains("today")) {
             return day(today);
@@ -128,32 +334,7 @@ public class ChatHistoryTools {
         if (normalized.contains("全部") || normalized.contains("所有") || normalized.contains("all")) {
             return new TimeWindow(null, null);
         }
-        return lastDays(30);
-    }
-
-    private String normalizeQuery(String query) {
-        if (query == null || query.isBlank()) {
-            return "";
-        }
-        String normalized = query.trim()
-                .replace("有没有", "")
-                .replace("是否", "")
-                .replace("找过你", "")
-                .replace("聊过", "")
-                .replace("聊天", "")
-                .replace("历史", "")
-                .replace("昨天", "")
-                .replace("今天", "")
-                .replace("前天", "")
-                .replace("上次", "")
-                .replace("之前", "")
-                .replace("过去", "")
-                .replace("提到的", "")
-                .replace("说的", "")
-                .replace("我", "")
-                .replace("你", "")
-                .trim();
-        return normalized.length() < 2 ? "" : normalized;
+        return lastDays(ChatConstants.DEFAULT_LOOKBACK_DAYS);
     }
 
     private TimeWindow day(LocalDate date) {
@@ -192,6 +373,12 @@ public class ChatHistoryTools {
             return normalized;
         }
         return normalized.substring(0, maxLength - 1) + "…";
+    }
+
+    private record HistoryLine(LocalDateTime time, String role, String content, boolean currentSession) {
+        String dedupeKey() {
+            return role + "|" + content;
+        }
     }
 
     private record TimeWindow(LocalDateTime startTime, LocalDateTime endTime) {}

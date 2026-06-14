@@ -66,11 +66,12 @@ public class ChatController {
         return ResultUtils.success(new ChatResponseDto(result.text(), result.usedVision(), id));
     }
 
-    @Operation(summary = "清空热会话上下文", description = "仅清除 Redis 中的对话上下文，不软删 MySQL 历史记录")
+    @Operation(summary = "清空会话", description = "清除 Redis 热上下文并软删该会话下全部 MySQL 消息")
     @PostMapping("/{id}/clear")
     public BaseResponse<Void> clearSession(@Parameter(description = "会话 ID") @PathVariable Long id) {
         ChatSession session = requireActiveSession(id);
         session.clearHistory();
+        persistenceService.clearSessionMessages(id);
         sessionManager.save(session);
         return ResultUtils.success();
     }
