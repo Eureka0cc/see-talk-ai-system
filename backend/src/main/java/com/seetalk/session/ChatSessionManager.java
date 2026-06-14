@@ -30,7 +30,7 @@ public class ChatSessionManager {
             return null;
         }
         Duration idle = Duration.between(session.getLastActive(), Instant.now());
-        if (idle.getSeconds() > 3600) {
+        if (idle.getSeconds() > properties.getSessionTimeoutSeconds()) {
             remove(sessionId);
             return null;
         }
