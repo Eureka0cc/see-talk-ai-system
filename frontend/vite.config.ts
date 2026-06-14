@@ -5,5 +5,9 @@ export default defineConfig({
   plugins: [react()],
   server: {
     port: 5173,
+    proxy: {
+      "/ws": { target: "http://localhost:8080", ws: true },
+      "/health": { target: "http://localhost:8080" },
+    },
   },
 });
