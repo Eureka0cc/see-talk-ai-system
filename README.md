@@ -6,11 +6,10 @@
 
 ## Demo 视频
 
-Bilibili 演示视频（待录制上传后替换为真实链接）：
+通过网盘分享的文件：demo演示视频.mp4
+链接: https://pan.baidu.com/s/1bzB6SwXn5ZUVUn_PrN-kzQ?pwd=pww5 提取码: pww5
 
-https://www.bilibili.com/video/BVxxxxxxxx
-
-> 视频需覆盖：摄像头启动 → 语音对话 → 视觉理解 → 流式打断 → 历史记录 → 成本控制。
+> 演示覆盖：摄像头启动 → 语音对话 → 视觉理解 → 图像去重 → 流式打断 → 文字输入 → 历史记录检索 → Agent 工具调用 → 提示注入防护 → 人脸模糊 → 新建/清空对话。
 
 ---
 
@@ -34,6 +33,8 @@ https://www.bilibili.com/video/BVxxxxxxxx
 | VAD 静音检测 | Web Audio API 实时音量分析，说话结束后自动发送 |
 | 会话标题生成 | AI 自动根据首轮对话生成简短中文标题 |
 | 历史对话检索 | AI Agent Tool Calling 自动查询历史聊天记录 |
+| 网页实时搜索 | AI 可自主调用 DuckDuckGo 搜索获取最新信息 |
+| 人脸模糊 | Canvas 实时人脸检测 + 像素化，保护隐私 |
 | 提示注入防护 | 输入/输出双向安全清洗，拒绝 jailbreak 与敏感信息回显 |
 | 流式安全缓冲 | 64 字符滑动窗口，防止流式输出截断敏感内容 |
 
@@ -213,6 +214,7 @@ see-talk-ai-system/
 │   │   │   └── VisionChatService.java         # 多模态对话核心
 │   │   ├── session/                          # 会话管理
 │   │   │   ├── ChatMessageSerde.java          # 消息序列化
+│   │   │   ├── ChatRequestContext.java        # 请求上下文封装
 │   │   │   ├── ChatSession.java
 │   │   │   ├── ChatSessionManager.java
 │   │   │   ├── ChatSessionStore.java          # 接口
@@ -222,6 +224,7 @@ see-talk-ai-system/
 │   │   │       └── RedisSessionKeys.java
 │   │   ├── tool/                             # AI Agent 工具
 │   │   │   ├── ChatHistoryTools.java          # @Tool 历史搜索 + 会话列表
+│   │   │   ├── HistorySearchSupportTools.java # @Tool 历史检索辅助
 │   │   │   └── WebSearchTools.java            # @Tool 网页搜索
 │   │   └── websocket/                        # WebSocket 层
 │   │       ├── ChatWebSocketHandler.java
@@ -255,6 +258,12 @@ see-talk-ai-system/
 │   │   │   ├── useSpeechSynthesis.ts          # TTS 语音播报
 │   │   │   ├── useVoiceActivity.ts            # VAD + Web Speech ASR
 │   │   │   └── useWebSocket.ts                # WebSocket 连接管理
+│   │   ├── api/                               # 自动生成的 API 客户端
+│   │   │   ├── duihua.ts                      # 对话 API
+│   │   │   ├── huihualishi.ts                 # 历史记录 API
+│   │   │   ├── jiankangjiancha.ts             # 健康检查 API
+│   │   │   └── index.ts
+│   │   ├── public/                            # 静态资源
 │   │   ├── utils/
 │   │   │   └── timeFormat.ts
 │   │   ├── request.ts                         # HTTP 请求封装
@@ -273,6 +282,7 @@ see-talk-ai-system/
 │   └── settings.local.json
 ├── docs/
 │   ├── DESIGN.md                              # 设计文档
+│   ├── DEMO_SCRIPT.md                         # Demo 录制文稿
 │   └── PR_DESCRIPTIONS.md                     # PR 描述模板
 ├── docker-compose.yml                         # 一键部署（MySQL + Redis + 全栈）
 └── README.md
@@ -491,23 +501,16 @@ ws://localhost:8080/ws/chat
 
 ### AI Agent 工具
 
-`ChatHistoryTools` 通过 Spring AI `@Tool` 注解向模型暴露两个函数：
+三个 `@Tool` 注解类，注册在 `VisionChatService` 中，模型可自主调用：
 
-1. **`searchChatHistory`** — 按关键词/时间范围搜索历史消息
-2. **`getRecentChatSessions`** — 列出最近会话摘要
+| 工具类 | 方法 | 说明 |
+|--------|------|------|
+| `ChatHistoryTools` | `searchChatHistory` | 按关键词/时间范围/抽象回忆搜索历史消息 |
+| `ChatHistoryTools` | `getRecentChatSessions` | 列出最近会话摘要 |
+| `WebSearchTools` | `searchWeb` | DuckDuckGo 网页搜索，返回 3-8 条结果含摘要 |
+| `WebSearchTools` | `quickSearch` | 快速事实查询，返回 top-2 结果 |
 
-模型可自主决定何时调用这些工具来回答用户的历史相关问题。
-
----
-
-## 已实现 Skill
-
-| Skill | 说明 |
-|-------|------|
-| `agnes-ai` | Agnes AI 文生图，兼容 OpenAI Images API |
-| `vision` | 图像识别，调用 Agnes AI `agnes-2.0-flash` 多模态模型 |
-
-详见 `.claude/skills/` 目录。
+所有工具调用记录格式：`[Tool:methodName] invoked/completed`，含参数、结果数、耗时 ms。后台日志全链路可追踪。
 
 ---
 
@@ -538,6 +541,9 @@ ws://localhost:8080/ws/chat
 | 21 | `198621b` | 重构后端包结构 + 常量提取 |
 | 22 | `7838ba1` | PromptSafetyGuard 提示注入防护 |
 | 23 | `9d225e2` | ChatHistoryTools Agent 历史检索 |
+| 24 | `6c74ee0` | WebSearchTools 网页搜索 + 增强历史检索 |
+| 25 | `3c705f5` | 前端 VAD 改进 + 人脸模糊隐私功能 |
+| 26 | `876c050` | Demo 脚本与 README 更新 |
 
 ---
 
