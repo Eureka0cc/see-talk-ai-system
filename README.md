@@ -2,7 +2,10 @@
 
 打开摄像头与麦克风，让 AI 看到你眼前的画面、听到你说的话，并给出自然的中文语音回应。
 
-> 本项目为七牛云「1024 创作大赛」参赛作品。
+> 本项目为七牛云「1024 创作大赛」参赛作品。  
+> **设计文档**：[docs/DESIGN.md](docs/DESIGN.md)（用户故事、成本控制、架构说明）
+
+> **GitHub 协作说明**：仓库共 **23 个 Pull Request 均已 Merge 并处于 Closed 状态**（[查看 Closed PRs](https://github.com/Eureka0cc/see-talk-ai-system/pulls?q=is%3Apr+is%3Aclosed)）。Closed 表示功能已合入 `main` 分支，并非废弃或拒绝合并；当前无 Open 中的 PR 属正常情况。
 
 ## Demo 视频
 
@@ -281,9 +284,8 @@ see-talk-ai-system/
 │   │   └── vision/SKILL.md                    # Vision 图像识别 Skill
 │   └── settings.local.json
 ├── docs/
-│   ├── DESIGN.md                              # 设计文档
-│   ├── DEMO_SCRIPT.md                         # Demo 录制文稿
-│   └── PR_DESCRIPTIONS.md                     # PR 描述模板
+│   ├── DESIGN.md                              # 设计文档（竞赛必填）
+│   └── DEMO_SCRIPT.md                         # Demo 录制文稿
 ├── docker-compose.yml                         # 一键部署（MySQL + Redis + 全栈）
 └── README.md
 ```
@@ -515,6 +517,8 @@ ws://localhost:8080/ws/chat
 ---
 
 ## PR 提交记录
+
+> GitHub 上对应 **23 个 PR 已全部 Merge 并 Close**，与下表功能划分一致。详见 [Closed Pull Requests](https://github.com/Eureka0cc/see-talk-ai-system/pulls?q=is%3Apr+is%3Aclosed)。
 
 | # | Commit | 说明 |
 |---|--------|------|
