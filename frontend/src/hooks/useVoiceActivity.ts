@@ -2,7 +2,16 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 const SILENCE_THRESHOLD = 0.015;
 const SPEECH_THRESHOLD = 0.03;
-const SILENCE_DURATION_MS = 120;
+/** 连续静音多久视为说完（过短会在句中停顿处提前截断） */
+const SILENCE_DURATION_MS = 500;
+/** 判定说完后再等 ASR 落稿，避免只发出已 final 的前半句 */
+const ASR_FLUSH_GRACE_MS = 320;
+/** ASR 仍有 interim 结果时的轮询间隔 */
+const ASR_INTERIM_POLL_MS = 120;
+/** 静音后最多等待 ASR 完全 final 的时间，避免无限挂起 */
+const MAX_ASR_FINALIZE_WAIT_MS = 2200;
+/** 同一句重复投递的去重窗口 */
+const DUPLICATE_DELIVERY_WINDOW_MS = 3500;
 const INTERRUPT_MIN_DURATION_MS = 400;
 const INTERRUPT_RMS_THRESHOLD = 0.05;
 const VOICE_BAND_START_BIN = 1;
@@ -10,6 +19,10 @@ const VOICE_BAND_END_BIN = 5;
 const VOICE_ENERGY_RATIO_MIN = 0.35;
 const RESTART_WINDOW_MS = 10000;
 const MAX_RESTARTS_IN_WINDOW = 3;
+
+function normalizeTranscript(text: string): string {
+  return text.replace(/[。，！？、；：""''….\-,!?;:'"]/g, "").trim();
+}
 
 function isHumanVoice(analyser: AnalyserNode, freqData: Uint8Array): boolean {
   analyser.getByteFrequencyData(freqData);
@@ -52,11 +65,21 @@ export function useVoiceActivity(options: UseVoiceActivityOptions = {}) {
   const recognitionRestartCountRef = useRef(0);
   const recognitionRestartWindowStartRef = useRef<number | null>(null);
   const startRecognitionRef = useRef<() => void>(() => {});
+  const restartRecognitionAfterDeliveryRef = useRef<() => void>(() => {});
+  const pendingDeliveryRestartRef = useRef(false);
   const silenceStartRef = useRef<number | null>(null);
   const speechStartTimeRef = useRef<number | null>(null);
   const interruptFiredRef = useRef(false);
   const speakingRef = useRef(false);
   const transcriptRef = useRef("");
+  /** 当前这一句已 final 的 ASR 片段（continuous 模式下需按 resultIndex 增量累积） */
+  const utteranceFinalRef = useRef("");
+  const hasInterimRef = useRef(false);
+  const lastTranscriptUpdateRef = useRef(0);
+  const silenceDetectedAtRef = useRef<number | null>(null);
+  const lastDeliveredTranscriptRef = useRef("");
+  const lastDeliveredAtRef = useRef(0);
+  const speechEndTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const dataArrayRef = useRef<Float32Array | null>(null);
   const freqDataRef = useRef<Uint8Array | null>(null);
   const onSpeechStartRef = useRef(options.onSpeechStart);
@@ -82,13 +105,63 @@ export function useVoiceActivity(options: UseVoiceActivityOptions = {}) {
   }, []);
 
   const clearSpeechState = useCallback(() => {
+    if (speechEndTimerRef.current) {
+      clearTimeout(speechEndTimerRef.current);
+      speechEndTimerRef.current = null;
+    }
     speakingRef.current = false;
     silenceStartRef.current = null;
     speechStartTimeRef.current = null;
     interruptFiredRef.current = false;
     transcriptRef.current = "";
+    utteranceFinalRef.current = "";
+    hasInterimRef.current = false;
+    lastTranscriptUpdateRef.current = 0;
+    silenceDetectedAtRef.current = null;
     setIsSpeaking(false);
     setTranscript("");
+  }, []);
+
+  const restartRecognitionAfterDelivery = useCallback(() => {
+    if (
+      !streamRef.current ||
+      !isMicEnabledRef.current ||
+      micPausedRef.current ||
+      suppressRecognitionRef.current
+    ) {
+      return;
+    }
+    pendingDeliveryRestartRef.current = true;
+    const recognition = recognitionRef.current;
+    if (!recognition) {
+      pendingDeliveryRestartRef.current = false;
+      utteranceFinalRef.current = "";
+      startRecognitionRef.current();
+      return;
+    }
+    intentionalStopRef.current = true;
+    recognitionRef.current = null;
+    try {
+      recognition.stop();
+    } catch {
+      pendingDeliveryRestartRef.current = false;
+      utteranceFinalRef.current = "";
+      startRecognitionRef.current();
+    }
+  }, []);
+
+  const shouldSkipDuplicateDelivery = useCallback((text: string) => {
+    const normalized = normalizeTranscript(text);
+    if (!normalized) return true;
+
+    const lastNormalized = normalizeTranscript(lastDeliveredTranscriptRef.current);
+    const elapsed = Date.now() - lastDeliveredAtRef.current;
+    if (elapsed > DUPLICATE_DELIVERY_WINDOW_MS || !lastNormalized) {
+      return false;
+    }
+
+    if (normalized === lastNormalized) return true;
+    return false;
   }, []);
 
   const startRecognition = useCallback(() => {
@@ -110,17 +183,23 @@ export function useVoiceActivity(options: UseVoiceActivityOptions = {}) {
       if (suppressRecognitionRef.current) return;
       recognitionRestartCountRef.current = 0;
       recognitionRestartWindowStartRef.current = null;
+
       let interim = "";
-      let final = "";
+      let hasInterim = false;
+      // continuous 模式下 results 会保留整段会话历史，必须从 resultIndex 起读
       for (let i = event.resultIndex; i < event.results.length; i++) {
         const result = event.results[i];
+        const piece = result[0]?.transcript ?? "";
         if (result.isFinal) {
-          final += result[0].transcript;
+          utteranceFinalRef.current += piece;
         } else {
-          interim += result[0].transcript;
+          interim = piece;
+          hasInterim = true;
         }
       }
-      const text = final || interim;
+      const text = (utteranceFinalRef.current + interim).trim();
+      hasInterimRef.current = hasInterim;
+      lastTranscriptUpdateRef.current = Date.now();
       transcriptRef.current = text;
       setTranscript(text);
     };
@@ -147,6 +226,21 @@ export function useVoiceActivity(options: UseVoiceActivityOptions = {}) {
       }
       const wasIntentionalStop = intentionalStopRef.current;
       intentionalStopRef.current = false;
+
+      if (pendingDeliveryRestartRef.current) {
+        pendingDeliveryRestartRef.current = false;
+        utteranceFinalRef.current = "";
+        if (
+          streamRef.current &&
+          isMicEnabledRef.current &&
+          !micPausedRef.current &&
+          !suppressRecognitionRef.current
+        ) {
+          startRecognitionRef.current();
+        }
+        return;
+      }
+
       if (
         wasIntentionalStop ||
         !streamRef.current ||
@@ -181,7 +275,80 @@ export function useVoiceActivity(options: UseVoiceActivityOptions = {}) {
 
   useEffect(() => {
     startRecognitionRef.current = startRecognition;
-  }, [startRecognition]);
+    restartRecognitionAfterDeliveryRef.current = restartRecognitionAfterDelivery;
+  }, [startRecognition, restartRecognitionAfterDelivery]);
+
+  const scheduleSpeechEnd = useCallback(() => {
+    if (speechEndTimerRef.current) return;
+    if (silenceDetectedAtRef.current === null) {
+      silenceDetectedAtRef.current = Date.now();
+    }
+
+    const attemptDeliver = () => {
+      speechEndTimerRef.current = null;
+      const now = Date.now();
+      const silenceStartedAt = silenceDetectedAtRef.current ?? now;
+      const waitedSinceSilence = now - silenceStartedAt;
+      const timeSinceTranscriptUpdate = now - lastTranscriptUpdateRef.current;
+
+      if (
+        hasInterimRef.current &&
+        waitedSinceSilence < MAX_ASR_FINALIZE_WAIT_MS
+      ) {
+        speechEndTimerRef.current = setTimeout(attemptDeliver, ASR_INTERIM_POLL_MS);
+        return;
+      }
+
+      if (
+        lastTranscriptUpdateRef.current > 0 &&
+        timeSinceTranscriptUpdate < ASR_FLUSH_GRACE_MS &&
+        waitedSinceSilence < MAX_ASR_FINALIZE_WAIT_MS
+      ) {
+        const waitMs = Math.max(
+          ASR_INTERIM_POLL_MS,
+          ASR_FLUSH_GRACE_MS - timeSinceTranscriptUpdate,
+        );
+        speechEndTimerRef.current = setTimeout(attemptDeliver, waitMs);
+        return;
+      }
+
+      speakingRef.current = false;
+      setIsSpeaking(false);
+      silenceDetectedAtRef.current = null;
+
+      const text = transcriptRef.current.trim();
+      if (text && !shouldSkipDuplicateDelivery(text)) {
+        onSpeechEndRef.current?.(text);
+        lastDeliveredTranscriptRef.current = text;
+        lastDeliveredAtRef.current = Date.now();
+        utteranceFinalRef.current = "";
+        transcriptRef.current = "";
+        hasInterimRef.current = false;
+        lastTranscriptUpdateRef.current = 0;
+        setTranscript("");
+        // 清空浏览器 ASR 缓冲，避免下一句拼进旧结果
+        restartRecognitionAfterDeliveryRef.current();
+      } else if (text) {
+        utteranceFinalRef.current = "";
+        transcriptRef.current = "";
+        hasInterimRef.current = false;
+        lastTranscriptUpdateRef.current = 0;
+        setTranscript("");
+      }
+      silenceStartRef.current = null;
+    };
+
+    speechEndTimerRef.current = setTimeout(attemptDeliver, ASR_FLUSH_GRACE_MS);
+  }, [shouldSkipDuplicateDelivery]);
+
+  const cancelSpeechEnd = useCallback(() => {
+    if (speechEndTimerRef.current) {
+      clearTimeout(speechEndTimerRef.current);
+      speechEndTimerRef.current = null;
+    }
+    silenceStartRef.current = null;
+    silenceDetectedAtRef.current = null;
+  }, []);
 
   const startVadLoop = useCallback(() => {
     const analyser = analyserRef.current;
@@ -202,12 +369,14 @@ export function useVoiceActivity(options: UseVoiceActivityOptions = {}) {
       const rms = Math.sqrt(sum / dataArray.length);
       const now = Date.now();
       if (rms > SPEECH_THRESHOLD) {
+        cancelSpeechEnd();
         if (speechStartTimeRef.current === null) {
           speechStartTimeRef.current = now;
           interruptFiredRef.current = false;
         }
         if (!speakingRef.current) {
           speakingRef.current = true;
+          silenceDetectedAtRef.current = null;
           setIsSpeaking(true);
         }
         silenceStartRef.current = null;
@@ -239,18 +408,11 @@ export function useVoiceActivity(options: UseVoiceActivityOptions = {}) {
           silenceStartRef.current = now;
         }
         if (
+          speakingRef.current &&
           silenceStartRef.current &&
           now - silenceStartRef.current > SILENCE_DURATION_MS
         ) {
-          speakingRef.current = false;
-          setIsSpeaking(false);
-          const text = transcriptRef.current.trim();
-          if (text) {
-            onSpeechEndRef.current?.(text);
-            transcriptRef.current = "";
-            setTranscript("");
-          }
-          silenceStartRef.current = null;
+          scheduleSpeechEnd();
         }
       } else {
         speechStartTimeRef.current = null;
@@ -260,7 +422,7 @@ export function useVoiceActivity(options: UseVoiceActivityOptions = {}) {
 
     stopVadLoop();
     rafRef.current = requestAnimationFrame(checkLevel);
-  }, [stopVadLoop]);
+  }, [cancelSpeechEnd, scheduleSpeechEnd, stopVadLoop]);
 
   const pauseMic = useCallback(() => {
     micPausedRef.current = true;
@@ -292,7 +454,12 @@ export function useVoiceActivity(options: UseVoiceActivityOptions = {}) {
   const setRecognitionSuppressed = useCallback((enabled: boolean) => {
     suppressRecognitionRef.current = enabled;
     if (enabled) {
+      cancelSpeechEnd();
       transcriptRef.current = "";
+      utteranceFinalRef.current = "";
+      hasInterimRef.current = false;
+      lastTranscriptUpdateRef.current = 0;
+      silenceDetectedAtRef.current = null;
       setTranscript("");
       speakingRef.current = false;
       silenceStartRef.current = null;
@@ -300,13 +467,19 @@ export function useVoiceActivity(options: UseVoiceActivityOptions = {}) {
       interruptFiredRef.current = false;
       setIsSpeaking(false);
     } else {
-      silenceStartRef.current = null;
+      cancelSpeechEnd();
+      utteranceFinalRef.current = "";
+      transcriptRef.current = "";
+      hasInterimRef.current = false;
+      lastTranscriptUpdateRef.current = 0;
+      setTranscript("");
       speakingRef.current = false;
       speechStartTimeRef.current = null;
       interruptFiredRef.current = false;
       setIsSpeaking(false);
+      restartRecognitionAfterDeliveryRef.current();
     }
-  }, []);
+  }, [cancelSpeechEnd]);
 
   const setMicEnabled = useCallback(
     (enabled: boolean) => {
@@ -325,6 +498,7 @@ export function useVoiceActivity(options: UseVoiceActivityOptions = {}) {
   );
 
   const stop = useCallback(() => {
+    cancelSpeechEnd();
     stopVadLoop();
     stopRecognition();
     streamRef.current?.getTracks().forEach((track) => track.stop());
@@ -343,12 +517,19 @@ export function useVoiceActivity(options: UseVoiceActivityOptions = {}) {
     speechStartTimeRef.current = null;
     interruptFiredRef.current = false;
     transcriptRef.current = "";
+    utteranceFinalRef.current = "";
+    hasInterimRef.current = false;
+    lastTranscriptUpdateRef.current = 0;
+    silenceDetectedAtRef.current = null;
+    lastDeliveredTranscriptRef.current = "";
+    lastDeliveredAtRef.current = 0;
+    pendingDeliveryRestartRef.current = false;
     setIsListening(false);
     setIsSpeaking(false);
     setTranscript("");
     setIsMicEnabledState(true);
     isMicEnabledRef.current = true;
-  }, [stopRecognition, stopVadLoop]);
+  }, [cancelSpeechEnd, stopRecognition, stopVadLoop]);
 
   const start = useCallback(async (): Promise<boolean> => {
     try {
