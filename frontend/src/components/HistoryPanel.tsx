@@ -11,6 +11,7 @@ interface HistoryPanelProps {
   error: string | null;
   onSelectSession: (id: string) => void;
   onDeleteSession: (id: string) => void;
+  onContinueSession: (id: string) => void;
   onRefresh: () => void;
 }
 
@@ -38,6 +39,7 @@ export function HistoryPanel({
   error,
   onSelectSession,
   onDeleteSession,
+  onContinueSession,
   onRefresh,
 }: HistoryPanelProps) {
   const selectedSession = sessions.find((s) => s.id === selectedSessionId);
@@ -153,12 +155,21 @@ export function HistoryPanel({
           {selectedSession && !loadingMessages && messages.length > 0 && (
             <>
               <div className="history-detail-header">
-                <div className="history-detail-title">{selectedSession.title}</div>
-                <div className="history-detail-meta">
-                  <span>{formatHistoryDate(selectedSession.lastActiveTime)}</span>
-                  <span className="history-item-dot">·</span>
-                  <span>{selectedSession.messageCount} 条消息</span>
+                <div>
+                  <div className="history-detail-title">{selectedSession.title}</div>
+                  <div className="history-detail-meta">
+                    <span>{formatHistoryDate(selectedSession.lastActiveTime)}</span>
+                    <span className="history-item-dot">·</span>
+                    <span>{selectedSession.messageCount} 条消息</span>
+                  </div>
                 </div>
+                <button
+                  type="button"
+                  className="btn btn-primary btn-sm"
+                  onClick={() => onContinueSession(selectedSession.id)}
+                >
+                  继续对话
+                </button>
               </div>
               <div className="history-messages">
                 <MessageList messages={displayMessages} />

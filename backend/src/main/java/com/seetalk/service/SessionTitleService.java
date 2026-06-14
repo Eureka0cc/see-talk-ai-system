@@ -1,7 +1,9 @@
 package com.seetalk.service;
 
 import com.alibaba.cloud.ai.dashscope.chat.DashScopeChatOptions;
-import com.seetalk.entity.ChatMessageEntity;
+import com.seetalk.model.constants.ChatConstants;
+import com.seetalk.model.constants.PromptConstants;
+import com.seetalk.model.entity.ChatMessageEntity;
 import com.seetalk.repository.ChatMessageRepository;
 import com.seetalk.repository.ChatSessionRepository;
 import lombok.extern.slf4j.Slf4j;
@@ -16,13 +18,6 @@ import java.util.List;
 @Slf4j
 @Service
 public class SessionTitleService {
-
-    private static final int TITLE_MAX_LENGTH = 30;
-    private static final int PREVIEW_MAX_LENGTH = 80;
-
-    private static final String TITLE_SYSTEM = """
-            你是会话标题生成器。根据用户与 AI 的对话片段，生成一句简短的中文标题。
-            要求：不超过 15 个字；概括对话主题；不加引号或书名号；不要以标点结尾；只输出标题文本。""";
 
     private final ChatClient chatClient;
     private final ChatSessionRepository sessionRepository;
@@ -43,8 +38,8 @@ public class SessionTitleService {
         this.titleOptions = DashScopeChatOptions.builder()
                 .withModel(model)
                 .withMultiModel(true)
-                .withTemperature(0.3)
-                .withMaxToken(40)
+                .withTemperature(ChatConstants.TITLE_GEN_TEMPERATURE)
+                .withMaxToken(ChatConstants.TITLE_GEN_MAX_TOKENS)
                 .build();
     }
 
@@ -56,19 +51,19 @@ public class SessionTitleService {
         }
 
         String lastAssistant = messages.stream()
-                .filter(message -> "assistant".equals(message.getRole()))
+                .filter(message -> ChatConstants.ROLE_ASSISTANT.equals(message.getRole()))
                 .reduce((first, second) -> second)
                 .map(ChatMessageEntity::getContent)
                 .orElse("");
 
         String firstUser = messages.stream()
-                .filter(message -> "user".equals(message.getRole()))
+                .filter(message -> ChatConstants.ROLE_USER.equals(message.getRole()))
                 .findFirst()
                 .map(ChatMessageEntity::getContent)
                 .orElse("");
 
         String firstAssistant = messages.stream()
-                .filter(message -> "assistant".equals(message.getRole()))
+                .filter(message -> ChatConstants.ROLE_ASSISTANT.equals(message.getRole()))
                 .findFirst()
                 .map(ChatMessageEntity::getContent)
                 .orElse("");
@@ -108,10 +103,10 @@ public class SessionTitleService {
         String userContent = """
                 用户：%s
                 AI：%s
-                """.formatted(truncate(userText, 200), truncate(assistantText, 300));
+                """.formatted(truncate(userText, ChatConstants.TITLE_GEN_USER_TRUNCATE), truncate(assistantText, ChatConstants.TITLE_GEN_ASSISTANT_TRUNCATE));
 
         String raw = chatClient.prompt()
-                .system(TITLE_SYSTEM)
+                .system(PromptConstants.TITLE_SYSTEM_PROMPT)
                 .user(userContent)
                 .options(titleOptions)
                 .call()
@@ -132,10 +127,10 @@ public class SessionTitleService {
         if (title.isBlank()) {
             return null;
         }
-        if (title.length() <= TITLE_MAX_LENGTH) {
+        if (title.length() <= ChatConstants.GENERATED_TITLE_MAX_LENGTH) {
             return title;
         }
-        return title.substring(0, TITLE_MAX_LENGTH - 1) + "…";
+        return title.substring(0, ChatConstants.GENERATED_TITLE_MAX_LENGTH - 1) + "…";
     }
 
     private String truncatePreview(String text) {
@@ -143,10 +138,10 @@ public class SessionTitleService {
             return "";
         }
         String trimmed = text.trim().replaceAll("\\s+", " ");
-        if (trimmed.length() <= PREVIEW_MAX_LENGTH) {
+        if (trimmed.length() <= ChatConstants.SESSION_PREVIEW_MAX_LENGTH) {
             return trimmed;
         }
-        return trimmed.substring(0, PREVIEW_MAX_LENGTH - 1) + "…";
+        return trimmed.substring(0, ChatConstants.SESSION_PREVIEW_MAX_LENGTH - 1) + "…";
     }
 
     private String truncate(String text, int maxLen) {

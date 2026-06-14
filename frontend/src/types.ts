@@ -3,6 +3,7 @@ export interface ChatMessage {
   role: "user" | "assistant" | "system";
   text: string;
   usedVision?: boolean;
+  interrupted?: boolean;
   timestamp: number;
 }
 

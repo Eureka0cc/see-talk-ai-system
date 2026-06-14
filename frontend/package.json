@@ -10,6 +10,7 @@
     "openapi2ts":"openapi2ts"
   },
   "dependencies": {
+    "@mediapipe/tasks-vision": "latest",
     "ant-design-vue": "^4.2.6",
     "axios": "^1.17.0",
     "react": "^18.3.1",

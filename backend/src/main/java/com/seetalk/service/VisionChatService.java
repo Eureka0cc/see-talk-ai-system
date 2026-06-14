@@ -4,10 +4,14 @@ import com.alibaba.cloud.ai.dashscope.chat.DashScopeChatOptions;
 import com.alibaba.cloud.ai.dashscope.chat.MessageFormat;
 import com.alibaba.cloud.ai.dashscope.common.DashScopeApiConstants;
 import com.seetalk.config.SeeTalkProperties;
-import com.seetalk.cost.FrameRateLimiter;
-import com.seetalk.cost.ImageDeduplicator;
+import com.seetalk.guard.PromptSafetyGuard;
+import com.seetalk.model.constants.ChatConstants;
+import com.seetalk.model.constants.PromptConstants;
+import com.seetalk.rate.FrameRateLimiter;
+import com.seetalk.rate.ImageDeduplicator;
 import com.seetalk.session.ChatSession;
 import com.seetalk.session.ChatSessionManager;
+import com.seetalk.tool.ChatHistoryTools;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.prompt.ChatOptions;
 import org.springframework.ai.chat.messages.AssistantMessage;
@@ -25,12 +29,16 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.time.ZonedDateTime;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
 
 @Slf4j
 @Service
 public class VisionChatService {
+
+    // 视觉请求识别与流式缓冲区参数见 ChatConstants
+    // 北京时间与时区格式化见 ChatConstants
 
     private final ChatClient chatClient;
     private final ImageProcessService imageProcessService;
@@ -39,6 +47,8 @@ public class VisionChatService {
     private final SeeTalkProperties properties;
     private final ChatPersistenceService persistenceService;
     private final ChatSessionManager sessionManager;
+    private final ChatHistoryTools chatHistoryTools;
+    private final PromptSafetyGuard promptSafetyGuard;
     private final String apiKey;
     private final ChatOptions dashScopeOptions;
 
@@ -50,6 +60,8 @@ public class VisionChatService {
             SeeTalkProperties properties,
             ChatPersistenceService persistenceService,
             ChatSessionManager sessionManager,
+            ChatHistoryTools chatHistoryTools,
+            PromptSafetyGuard promptSafetyGuard,
             @Value("${spring.ai.dashscope.api-key:}") String apiKey,
             @Value("${spring.ai.dashscope.chat.options.model:qwen3-vl-flash}") String model) {
         this.chatClient = chatClient;
@@ -59,16 +71,21 @@ public class VisionChatService {
         this.properties = properties;
         this.persistenceService = persistenceService;
         this.sessionManager = sessionManager;
+        this.chatHistoryTools = chatHistoryTools;
+        this.promptSafetyGuard = promptSafetyGuard;
         this.apiKey = apiKey;
         this.dashScopeOptions = DashScopeChatOptions.builder()
                 .withModel(model)
                 .withMultiModel(true)
+                .withStream(true)
+                .withTemperature(ChatConstants.DEFAULT_TEMPERATURE)
+                .withMaxToken(ChatConstants.DEFAULT_MAX_TOKENS)
                 .build();
     }
 
     public record ChatResult(String text, boolean usedVision) {}
 
-    public record UserTurnContext(String userText, boolean usedVision) {}
+    public record UserTurnContext(String rawUserText, boolean usedVision) {}
 
     public boolean isApiConfigured() {
         return apiKey != null && !apiKey.isBlank();
@@ -80,7 +97,10 @@ public class VisionChatService {
             throw new IllegalStateException("服务端未配置 DASHSCOPE_API_KEY，请检查 backend 环境变量");
         }
 
-        String userText = (text == null || text.isBlank()) ? "请描述你看到的画面。" : text.trim();
+        String rawUserText = (text == null || text.isBlank()) ? "请描述你看到的画面。" : text.trim();
+        boolean promptInjectionDetected = promptSafetyGuard.looksLikePromptInjection(rawUserText);
+        String modelUserText = promptSafetyGuard.hardenUserInput(rawUserText);
+        boolean userAsksForVision = containsVisionRequest(rawUserText);
         boolean useVision = false;
         byte[] compressedImage = null;
         boolean hasImage = imageBase64 != null && !imageBase64.isBlank();
@@ -91,13 +111,20 @@ public class VisionChatService {
                 compressedImage = imageProcessService.compressBase64Image(imageBase64);
                 long compressMs = System.currentTimeMillis() - compressStart;
                 String hash = imageDeduplicator.computeHash(compressedImage);
-                boolean duplicate = imageDeduplicator.isDuplicate(session.getLastImageHash(), hash);
-                if (!duplicate) {
+                String lastHash = session.getLastImageHash();
+                int hammingDistance = imageDeduplicator.hammingDistance(lastHash, hash);
+                boolean sceneChanged = imageDeduplicator.isNewScene(lastHash, hash);
+
+                if (sceneChanged || userAsksForVision) {
                     session.setLastImageHash(hash);
                     useVision = true;
+                } else {
+                    log.debug("Skipping image: scene unchanged and user not requesting vision session={}",
+                            session.getId());
                 }
-                log.info("Image processed session={} compress={}ms size={}KB vision={} duplicate={}",
-                        session.getId(), compressMs, compressedImage.length / 1024, useVision, duplicate);
+                log.info("Image processed session={} compress={}ms size={}KB vision={} sceneChanged={} asksVision={} hammingDistance={}",
+                        session.getId(), compressMs, compressedImage.length / 1024, useVision,
+                        sceneChanged, userAsksForVision, hammingDistance);
             } else {
                 log.info("Image skipped by rate limiter session={}", session.getId());
             }
@@ -112,12 +139,12 @@ public class VisionChatService {
             Map<String, Object> metadata = new HashMap<>();
             metadata.put(DashScopeApiConstants.MESSAGE_FORMAT, MessageFormat.IMAGE);
             userMessage = UserMessage.builder()
-                    .text(userText)
+                    .text(modelUserText)
                     .media(media)
                     .metadata(metadata)
                     .build();
         } else {
-            userMessage = new UserMessage(userText);
+            userMessage = new UserMessage(modelUserText);
         }
 
         session.getMessages().add(userMessage);
@@ -127,7 +154,10 @@ public class VisionChatService {
         log.info("User turn prepared session={} hasImage={} useVision={} historySize={} cost={}ms",
                 session.getId(), hasImage, useVision, session.getMessages().size(),
                 System.currentTimeMillis() - start);
-        return new UserTurnContext(userText, useVision);
+        if (promptInjectionDetected) {
+            log.warn("Potential prompt injection detected and hardened session={}", session.getId());
+        }
+        return new UserTurnContext(rawUserText, useVision);
     }
 
     public void streamResponse(
@@ -136,15 +166,19 @@ public class VisionChatService {
             Consumer<String> onComplete,
             Consumer<Throwable> onError) {
         List<Message> history = buildHistory(session);
-        StringBuilder fullText = new StringBuilder();
+        StringBuilder rawText = new StringBuilder();
+        StringBuilder pendingBuffer = new StringBuilder();
         long start = System.currentTimeMillis();
         AtomicBoolean firstChunk = new AtomicBoolean(true);
 
         log.info("AI stream starting session={} historyMessages={}", session.getId(), history.size());
 
+        String dynamicSystemPrompt = buildDynamicSystemPrompt();
         Flux<String> flux = chatClient.prompt()
+                .system(dynamicSystemPrompt)
                 .messages(history)
                 .options(dashScopeOptions)
+                .tools(chatHistoryTools)
                 .stream()
                 .content();
 
@@ -152,11 +186,23 @@ public class VisionChatService {
                     if (firstChunk.compareAndSet(true, false)) {
                         log.info("AI first token session={} ttft={}ms", session.getId(), System.currentTimeMillis() - start);
                     }
-                    fullText.append(chunk);
-                    onChunk.accept(chunk);
+                    rawText.append(chunk);
+                    pendingBuffer.append(chunk);
+                    if (pendingBuffer.length() > ChatConstants.STREAM_GUARD_BUFFER_CHARS) {
+                        int flushLength = pendingBuffer.length() - ChatConstants.STREAM_GUARD_BUFFER_CHARS;
+                        String safeChunk = promptSafetyGuard.sanitizeAssistantOutput(pendingBuffer.substring(0, flushLength));
+                        pendingBuffer.delete(0, flushLength);
+                        if (safeChunk != null && !safeChunk.isBlank()) {
+                            onChunk.accept(safeChunk);
+                        }
+                    }
                 })
                 .doOnComplete(() -> {
-                    String response = fullText.toString();
+                    String safeTail = promptSafetyGuard.sanitizeAssistantOutput(pendingBuffer.toString());
+                    if (safeTail != null && !safeTail.isBlank()) {
+                        onChunk.accept(safeTail);
+                    }
+                    String response = promptSafetyGuard.sanitizeAssistantOutput(rawText.toString());
                     session.addAssistantMessage(response);
                     log.info("AI stream complete session={} total={}ms chars={}",
                             session.getId(), System.currentTimeMillis() - start, response.length());
@@ -174,16 +220,20 @@ public class VisionChatService {
         UserTurnContext turn = prepareUserTurn(session, text, imageBase64);
 
         List<Message> history = buildHistory(session);
+        String dynamicSystemPrompt = buildDynamicSystemPrompt();
         String response = chatClient.prompt()
+                .system(dynamicSystemPrompt)
                 .messages(history)
                 .options(dashScopeOptions)
+                .tools(chatHistoryTools)
                 .call()
                 .content();
+        String safeResponse = promptSafetyGuard.sanitizeAssistantOutput(response);
 
-        session.addAssistantMessage(response);
-        persistenceService.persistTurn(session.getId(), turn.userText(), response, turn.usedVision());
+        session.addAssistantMessage(safeResponse);
+        persistenceService.persistTurn(session.getId(), turn.rawUserText(), safeResponse, turn.usedVision());
         sessionManager.save(session);
-        return new ChatResult(response, turn.usedVision());
+        return new ChatResult(safeResponse, turn.usedVision());
     }
 
     public void finalizeTurnAsync(ChatSession session, String userText, String assistantText, boolean usedVision) {
@@ -199,5 +249,33 @@ public class VisionChatService {
             }
         }
         return history;
+    }
+
+    private String buildDynamicSystemPrompt() {
+        String currentBeijingTime = ZonedDateTime.now(ChatConstants.BEIJING_ZONE)
+                .format(ChatConstants.BEIJING_TIME_FORMATTER);
+        return PromptConstants.SYSTEM_PROMPT + "\nCurrent Beijing Time: " + currentBeijingTime
+                + " CST (UTC+8, Asia/Shanghai)。请基于该时间理解“今天”“昨天”“昨晚”等相对时间。";
+    }
+
+    private boolean containsVisionRequest(String text) {
+        if (text == null || text.isBlank()) {
+            return true;
+        }
+        String normalized = text.replaceAll("\\s+", "");
+        for (String pattern : ChatConstants.VISION_REQUEST_PATTERNS) {
+            if (normalized.contains(pattern)) {
+                return true;
+            }
+        }
+        boolean hasDeicticReference = normalized.contains("这个")
+                || normalized.contains("那个")
+                || normalized.contains("这边")
+                || normalized.contains("那边");
+        boolean hasQuestionForObject = normalized.contains("是什么")
+                || normalized.contains("啥")
+                || normalized.contains("怎么样")
+                || normalized.contains("好不好看");
+        return hasDeicticReference && hasQuestionForObject;
     }
 }

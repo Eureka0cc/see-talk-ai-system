@@ -1,13 +1,15 @@
-package com.seetalk.entity;
+package com.seetalk.model.entity;
 
 import jakarta.persistence.Column;
 import jakarta.persistence.Embedded;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Table;
 import org.hibernate.annotations.Comment;
+import org.hibernate.annotations.SQLRestriction;
 
 @Comment("聊天消息表")
 @Entity
+@SQLRestriction("is_deleted = 0")
 @Table(name = "chat_message")
 public class ChatMessageEntity extends BaseEntity {
 

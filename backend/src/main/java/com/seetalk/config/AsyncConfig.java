@@ -1,5 +1,6 @@
 package com.seetalk.config;
 
+import com.seetalk.model.constants.AsyncConstants;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.scheduling.annotation.EnableAsync;
@@ -14,10 +15,10 @@ public class AsyncConfig {
     @Bean(name = "chatTaskExecutor")
     public Executor chatTaskExecutor() {
         ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
-        executor.setCorePoolSize(2);
-        executor.setMaxPoolSize(4);
-        executor.setQueueCapacity(100);
-        executor.setThreadNamePrefix("chat-async-");
+        executor.setCorePoolSize(AsyncConstants.CORE_POOL_SIZE);
+        executor.setMaxPoolSize(AsyncConstants.MAX_POOL_SIZE);
+        executor.setQueueCapacity(AsyncConstants.QUEUE_CAPACITY);
+        executor.setThreadNamePrefix(AsyncConstants.THREAD_NAME_PREFIX);
         executor.initialize();
         return executor;
     }

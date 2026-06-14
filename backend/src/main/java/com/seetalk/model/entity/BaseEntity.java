@@ -1,4 +1,4 @@
-package com.seetalk.entity;
+package com.seetalk.model.entity;
 
 import jakarta.persistence.Id;
 import jakarta.persistence.MappedSuperclass;

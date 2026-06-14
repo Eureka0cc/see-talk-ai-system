@@ -11,6 +11,7 @@ public class SeeTalkProperties {
     private int maxFramesPerMinute = 12;
     private int maxContextMessages = 20;
     private int sessionTimeoutSeconds = 3600;
+    private long defaultUserId = 329767336584859648L;
     private long snowflakeWorkerId = 1;
     private long snowflakeDatacenterId = 1;
 
@@ -52,6 +53,14 @@ public class SeeTalkProperties {
 
     public void setSessionTimeoutSeconds(int sessionTimeoutSeconds) {
         this.sessionTimeoutSeconds = sessionTimeoutSeconds;
+    }
+
+    public long getDefaultUserId() {
+        return defaultUserId;
+    }
+
+    public void setDefaultUserId(long defaultUserId) {
+        this.defaultUserId = defaultUserId;
     }
 
     public String getCorsOrigins() {

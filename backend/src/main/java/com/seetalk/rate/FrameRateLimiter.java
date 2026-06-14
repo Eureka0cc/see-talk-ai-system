@@ -1,4 +1,4 @@
-package com.seetalk.cost;
+package com.seetalk.rate;
 
 public interface FrameRateLimiter {
 

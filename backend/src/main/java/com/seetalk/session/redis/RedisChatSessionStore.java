@@ -1,6 +1,7 @@
 package com.seetalk.session.redis;
 
 import com.seetalk.config.SeeTalkProperties;
+import com.seetalk.model.constants.SessionConstants;
 import com.seetalk.session.ChatMessageSerde;
 import com.seetalk.session.ChatSession;
 import com.seetalk.session.ChatSessionStore;
@@ -39,9 +40,9 @@ public class RedisChatSessionStore implements ChatSessionStore {
         String memoryKey = RedisSessionKeys.memory(id);
 
         redis.opsForHash().putAll(sessionKey, Map.of(
-                "lastImageHash", session.getLastImageHash() != null ? session.getLastImageHash() : "",
-                "lastActive", String.valueOf(session.getLastActive().toEpochMilli()),
-                "createdAt", String.valueOf(session.getCreatedAt().toEpochMilli())
+                SessionConstants.META_LAST_IMAGE_HASH, session.getLastImageHash() != null ? session.getLastImageHash() : "",
+                SessionConstants.META_LAST_ACTIVE, String.valueOf(session.getLastActive().toEpochMilli()),
+                SessionConstants.META_CREATED_AT, String.valueOf(session.getCreatedAt().toEpochMilli())
         ));
 
         redis.delete(memoryKey);
@@ -64,7 +65,7 @@ public class RedisChatSessionStore implements ChatSessionStore {
         }
 
         ChatSession session = new ChatSession(sessionId);
-        Object hash = meta.get("lastImageHash");
+        Object hash = meta.get(SessionConstants.META_LAST_IMAGE_HASH);
         if (hash instanceof String hashText && !hashText.isBlank()) {
             session.setLastImageHash(hashText);
         }
@@ -81,7 +82,7 @@ public class RedisChatSessionStore implements ChatSessionStore {
             session.replaceMessages(msgs);
         }
 
-        Object lastActive = meta.get("lastActive");
+        Object lastActive = meta.get(SessionConstants.META_LAST_ACTIVE);
         if (lastActive instanceof String lastActiveText && !lastActiveText.isBlank()) {
             session.setLastActive(Instant.ofEpochMilli(Long.parseLong(lastActiveText)));
         }

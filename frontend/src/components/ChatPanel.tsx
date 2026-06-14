@@ -5,25 +5,32 @@ import { chatMessagesToDisplay, MessageList } from "./MessageList";
 interface ChatPanelProps {
   messages: ChatMessage[];
   isThinking: boolean;
+  isStreaming: boolean;
   chatError: string | null;
   canClear: boolean;
   onClearHistory: () => void;
   onDismissError: () => void;
+  onSendText?: (text: string) => void;
 }
 
 export function ChatPanel({
   messages,
   isThinking,
+  isStreaming,
   chatError,
   canClear,
   onClearHistory,
   onDismissError,
+  onSendText,
 }: ChatPanelProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, isThinking, chatError]);
+    if (!bottomRef.current) return;
+    bottomRef.current.scrollIntoView({
+      behavior: isStreaming ? "auto" : "smooth",
+    });
+  }, [messages, isThinking, chatError, isStreaming]);
 
   const displayMessages = chatMessagesToDisplay(messages);
 
@@ -61,9 +68,29 @@ export function ChatPanel({
             <div className="chat-empty-icon" aria-hidden="true">💬</div>
             <div className="chat-empty-title">开始对话吧</div>
             <div className="chat-empty-subtitle">对着摄像头说话，或打字输入你的问题</div>
+            <div className="chat-empty-hints">
+              <span
+                className="chat-empty-hint"
+                onClick={() => onSendText?.("今天天气怎么样")}
+              >
+                今天天气怎么样
+              </span>
+              <span
+                className="chat-empty-hint"
+                onClick={() => onSendText?.("帮我看看这是什么")}
+              >
+                帮我看看这是什么
+              </span>
+              <span
+                className="chat-empty-hint"
+                onClick={() => onSendText?.("现在几点了")}
+              >
+                现在几点了
+              </span>
+            </div>
           </div>
         )}
-        <MessageList messages={displayMessages} />
+        <MessageList messages={displayMessages} isStreaming={isStreaming} />
         {isThinking && (
           <div className="chat-message chat-message--assistant">
             <div className="chat-message-meta">
@@ -71,7 +98,12 @@ export function ChatPanel({
               <span className="chat-message-role">SeeTalk</span>
             </div>
             <div className="chat-bubble chat-bubble--assistant thinking-indicator">
-              思考中...
+              <span>思考中</span>
+              <span className="streaming-loader" aria-hidden="true">
+                <span className="streaming-loader-dot" />
+                <span className="streaming-loader-dot" />
+                <span className="streaming-loader-dot" />
+              </span>
             </div>
           </div>
         )}

@@ -1,20 +1,31 @@
 package com.seetalk.websocket;
 
 import com.fasterxml.jackson.databind.JsonNode;
-import com.seetalk.cost.FrameRateLimiter;
+import com.seetalk.config.SeeTalkProperties;
+import com.seetalk.model.constants.ChatConstants;
+import com.seetalk.model.constants.WebSocketConstants;
+import com.seetalk.model.entity.ChatMessageEntity;
+import com.seetalk.rate.FrameRateLimiter;
 import com.seetalk.session.ChatSession;
 import com.seetalk.session.ChatSessionManager;
 import com.seetalk.service.ChatPersistenceService;
 import com.seetalk.service.VisionChatService;
+import org.springframework.ai.chat.messages.AssistantMessage;
+import org.springframework.ai.chat.messages.Message;
+import org.springframework.ai.chat.messages.UserMessage;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
+import org.springframework.web.util.UriComponentsBuilder;
 import org.springframework.web.socket.CloseStatus;
 import org.springframework.web.socket.TextMessage;
 import org.springframework.web.socket.WebSocketSession;
 import org.springframework.web.socket.handler.ConcurrentWebSocketSessionDecorator;
 import org.springframework.web.socket.handler.TextWebSocketHandler;
 
+import java.net.URI;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
@@ -23,13 +34,12 @@ import java.util.concurrent.ConcurrentHashMap;
 public class ChatWebSocketHandler extends TextWebSocketHandler {
 
     private static final Logger log = LoggerFactory.getLogger(ChatWebSocketHandler.class);
-    private static final int SEND_TIME_LIMIT_MS = 5000;
-    private static final int SEND_BUFFER_SIZE_LIMIT = 512 * 1024;
 
     private final ChatSessionManager sessionManager;
     private final VisionChatService visionChatService;
     private final ChatPersistenceService persistenceService;
     private final FrameRateLimiter frameRateLimiter;
+    private final SeeTalkProperties properties;
     private final Map<String, Long> wsToChatSession = new ConcurrentHashMap<>();
     private final Map<Long, Boolean> streamingSessions = new ConcurrentHashMap<>();
     private final Map<String, WebSocketSession> decoratedSessions = new ConcurrentHashMap<>();
@@ -38,23 +48,22 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
             ChatSessionManager sessionManager,
             VisionChatService visionChatService,
             ChatPersistenceService persistenceService,
-            FrameRateLimiter frameRateLimiter) {
+            FrameRateLimiter frameRateLimiter,
+            SeeTalkProperties properties) {
         this.sessionManager = sessionManager;
         this.visionChatService = visionChatService;
         this.persistenceService = persistenceService;
         this.frameRateLimiter = frameRateLimiter;
+        this.properties = properties;
     }
 
     @Override
     public void afterConnectionEstablished(WebSocketSession session) {
         long start = System.currentTimeMillis();
-        Long sessionId = persistenceService.allocateSessionId();
-        ChatSession chatSession = sessionManager.create(sessionId);
-        wsToChatSession.put(session.getId(), sessionId);
-        persistenceService.initSessionAsync(sessionId);
-        sendSafe(session, WsMessage.session(chatSession.getId(), "连接成功，开始对话吧！"));
+        ChatSession chatSession = bindChatSession(session);
+        sendSafe(session, WsMessage.session(chatSession.getId(), WebSocketConstants.CONNECTED_MSG));
         log.info("WebSocket connected wsId={} sessionId={} remote={} cost={}ms",
-                session.getId(), sessionId, session.getRemoteAddress(), System.currentTimeMillis() - start);
+                session.getId(), chatSession.getId(), session.getRemoteAddress(), System.currentTimeMillis() - start);
     }
 
     @Override
@@ -64,7 +73,7 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
         log.debug("WebSocket message wsId={} type={} bytes={}",
                 session.getId(), type, message.getPayloadLength());
 
-        if ("ping".equals(type)) {
+        if (WebSocketConstants.MSG_TYPE_PING.equals(type)) {
             sendSafe(session, WsMessage.pong());
             return;
         }
@@ -72,18 +81,27 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
         Long chatSessionId = wsToChatSession.get(session.getId());
         ChatSession chatSession = chatSessionId != null ? sessionManager.get(chatSessionId) : null;
         if (chatSession == null) {
-            session.sendMessage(new TextMessage(WsMessage.error("会话已过期，请刷新页面重连")));
+            session.sendMessage(new TextMessage(
+                    WsMessage.error(WebSocketConstants.SESSION_EXPIRED_MSG)));
             return;
         }
 
         switch (type) {
-            case "user_message" -> handleUserMessage(session, chatSession, data);
-            case "clear_history" -> {
+            case WebSocketConstants.MSG_TYPE_USER_MESSAGE ->
+                    handleUserMessage(session, chatSession, data);
+            case WebSocketConstants.MSG_TYPE_CLEAR_HISTORY -> {
                 chatSession.clearHistory();
+                try {
+                    persistenceService.clearSessionMessages(chatSession.getId());
+                } catch (Exception e) {
+                    log.error("Failed to clear persisted messages for session {}",
+                            chatSession.getId(), e);
+                }
                 sessionManager.save(chatSession);
                 session.sendMessage(new TextMessage(WsMessage.historyCleared()));
             }
-            default -> session.sendMessage(new TextMessage(WsMessage.error("未知消息类型: " + type)));
+            default -> session.sendMessage(new TextMessage(
+                    WsMessage.error(WebSocketConstants.UNKNOWN_TYPE_PREFIX + type)));
         }
     }
 
@@ -91,18 +109,19 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
             throws Exception {
         long start = System.currentTimeMillis();
         if (Boolean.TRUE.equals(streamingSessions.get(chatSession.getId()))) {
-            sendSafe(session, WsMessage.error("请等待当前回复完成"));
+            sendSafe(session, WsMessage.error(WebSocketConstants.WAIT_RESPONSE_MSG));
             return;
         }
 
-        String text = data.path("text").asText("");
-        String image = data.has("image") && !data.get("image").isNull()
-                ? data.get("image").asText(null)
+        String text = data.path(WebSocketConstants.FIELD_TEXT).asText("");
+        String image = data.has(WebSocketConstants.FIELD_IMAGE)
+                && !data.get(WebSocketConstants.FIELD_IMAGE).isNull()
+                ? data.get(WebSocketConstants.FIELD_IMAGE).asText(null)
                 : null;
         boolean hasImage = image != null && !image.isBlank();
 
         if (text.isBlank() && !hasImage) {
-            sendSafe(session, WsMessage.error("消息内容为空"));
+            sendSafe(session, WsMessage.error(WebSocketConstants.EMPTY_MESSAGE_MSG));
             return;
         }
 
@@ -129,31 +148,88 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
                     chatSession,
                     chunk -> sendSafe(safeSession, WsMessage.assistantDelta(messageId, chunk)),
                     fullText -> {
+                        visionChatService.finalizeTurnAsync(
+                                chatSession, turn.rawUserText(), fullText, turn.usedVision());
                         streamingSessions.remove(chatSession.getId());
                         sendSafe(safeSession, WsMessage.assistantDone(messageId, fullText, turn.usedVision()));
-                        visionChatService.finalizeTurnAsync(
-                                chatSession, turn.userText(), fullText, turn.usedVision());
                         log.info("User message handled session={} messageId={} total={}ms responseChars={}",
                                 chatSession.getId(), messageId, System.currentTimeMillis() - start, fullText.length());
                     },
                     error -> {
-                        streamingSessions.remove(chatSession.getId());
                         log.error("AI stream failed session={} elapsed={}ms",
                                 chatSession.getId(), System.currentTimeMillis() - start, error);
-                        sendSafe(safeSession, WsMessage.error("AI 调用失败: " + error.getMessage()));
+                        sendSafe(safeSession, WsMessage.error(WebSocketConstants.AI_ERROR_PREFIX + error.getMessage()));
+                        streamingSessions.remove(chatSession.getId());
                     });
         } catch (Exception e) {
-            streamingSessions.remove(chatSession.getId());
             log.error("AI call failed session={} elapsed={}ms",
                     chatSession.getId(), System.currentTimeMillis() - start, e);
-            sendSafe(session, WsMessage.error("AI 调用失败: " + e.getMessage()));
+            sendSafe(session, WsMessage.error(WebSocketConstants.AI_ERROR_PREFIX + e.getMessage()));
+            streamingSessions.remove(chatSession.getId());
         }
     }
 
     private WebSocketSession decorateSession(WebSocketSession session) {
         return decoratedSessions.computeIfAbsent(session.getId(), id ->
                 new ConcurrentWebSocketSessionDecorator(
-                        session, SEND_TIME_LIMIT_MS, SEND_BUFFER_SIZE_LIMIT));
+                        session, WebSocketConstants.SEND_TIME_LIMIT_MS, WebSocketConstants.BUFFER_SIZE));
+    }
+
+    private ChatSession bindChatSession(WebSocketSession session) {
+        Long requestedSessionId = resolveRequestedSessionId(session);
+        if (requestedSessionId != null && persistenceService.sessionExists(requestedSessionId)) {
+            ChatSession resumed = sessionManager.getOrCreate(requestedSessionId, () -> restoreRecentContext(requestedSessionId));
+            wsToChatSession.put(session.getId(), resumed.getId());
+            log.info("WebSocket resumed wsId={} requestedSessionId={} restoredMessages={}",
+                    session.getId(), requestedSessionId, resumed.getMessages().size());
+            return resumed;
+        }
+
+        Long sessionId = persistenceService.allocateSessionId();
+        ChatSession chatSession = sessionManager.create(sessionId);
+        wsToChatSession.put(session.getId(), sessionId);
+        persistenceService.initSessionAsync(sessionId);
+        return chatSession;
+    }
+
+    private Long resolveRequestedSessionId(WebSocketSession session) {
+        URI uri = session.getUri();
+        if (uri == null) {
+            return null;
+        }
+        String idText = UriComponentsBuilder.fromUri(uri).build().getQueryParams()
+                .getFirst(WebSocketConstants.FIELD_SESSION_ID);
+        if (idText == null || idText.isBlank()) {
+            idText = UriComponentsBuilder.fromUri(uri).build().getQueryParams()
+                    .getFirst(WebSocketConstants.FIELD_SESSION_ID_ALT);
+        }
+        if (idText == null || idText.isBlank()) {
+            return null;
+        }
+        try {
+            return Long.parseLong(idText.trim());
+        } catch (NumberFormatException ignored) {
+            log.warn("Invalid resume session id wsId={} value={}", session.getId(), idText);
+            return null;
+        }
+    }
+
+    private List<Message> restoreRecentContext(Long sessionId) {
+        List<ChatMessageEntity> entities = persistenceService.listRecentMessagesForContext(
+                sessionId,
+                properties.getMaxContextMessages());
+        if (entities.isEmpty()) {
+            return List.of();
+        }
+        List<Message> restored = new ArrayList<>();
+        for (ChatMessageEntity entity : entities) {
+            if (ChatConstants.ROLE_ASSISTANT.equals(entity.getRole())) {
+                restored.add(new AssistantMessage(entity.getContent()));
+            } else if (ChatConstants.ROLE_USER.equals(entity.getRole())) {
+                restored.add(new UserMessage(entity.getContent()));
+            }
+        }
+        return restored;
     }
 
     private void sendSafe(WebSocketSession session, String payload) {

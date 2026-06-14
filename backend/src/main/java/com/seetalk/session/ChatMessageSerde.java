@@ -2,6 +2,7 @@ package com.seetalk.session;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.seetalk.model.constants.ChatConstants;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.UserMessage;
@@ -23,14 +24,14 @@ public class ChatMessageSerde {
         try {
             if (message instanceof UserMessage um) {
                 Map<String, Object> payload = new HashMap<>();
-                payload.put("role", "user");
+                payload.put("role", ChatConstants.ROLE_USER);
                 payload.put("text", um.getText());
                 payload.put("has_media", um.getMedia() != null && !um.getMedia().isEmpty());
                 return objectMapper.writeValueAsString(payload);
             }
             if (message instanceof AssistantMessage am) {
                 return objectMapper.writeValueAsString(
-                        Map.of("role", "assistant", "text", am.getText()));
+                        Map.of("role", ChatConstants.ROLE_ASSISTANT, "text", am.getText()));
             }
             return null;
         } catch (JsonProcessingException e) {
@@ -49,8 +50,8 @@ public class ChatMessageSerde {
             }
             String text = String.valueOf(textObj);
             return switch (role) {
-                case "user" -> new UserMessage(text);
-                case "assistant" -> new AssistantMessage(text);
+                case ChatConstants.ROLE_USER -> new UserMessage(text);
+                case ChatConstants.ROLE_ASSISTANT -> new AssistantMessage(text);
                 default -> null;
             };
         } catch (JsonProcessingException e) {

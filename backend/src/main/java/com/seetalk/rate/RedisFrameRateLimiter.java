@@ -1,6 +1,7 @@
-package com.seetalk.cost;
+package com.seetalk.rate;
 
 import com.seetalk.config.SeeTalkProperties;
+import com.seetalk.model.constants.RateLimitConstants;
 import com.seetalk.session.redis.RedisSessionKeys;
 import org.springframework.context.annotation.Profile;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -13,8 +14,7 @@ import java.util.UUID;
 @Profile("!test")
 public class RedisFrameRateLimiter implements FrameRateLimiter {
 
-    private static final long WINDOW_MS = 60_000L;
-    private static final Duration FRAMES_TTL = Duration.ofSeconds(60);
+    private static final Duration FRAMES_TTL = Duration.ofSeconds(RateLimitConstants.FRAMES_TTL_SECONDS);
 
     private final StringRedisTemplate redis;
     private final int maxPerMinute;
@@ -28,7 +28,7 @@ public class RedisFrameRateLimiter implements FrameRateLimiter {
     public boolean allow(Long sessionId) {
         String key = RedisSessionKeys.frames(sessionId);
         long now = System.currentTimeMillis();
-        long windowStart = now - WINDOW_MS;
+        long windowStart = now - RateLimitConstants.WINDOW_MS;
 
         redis.opsForZSet().removeRangeByScore(key, 0, windowStart);
         Long count = redis.opsForZSet().zCard(key);

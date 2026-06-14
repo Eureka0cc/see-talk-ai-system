@@ -11,26 +11,106 @@ interface ControlBarProps {
   isSessionActive: boolean;
   isStartingSession: boolean;
   isThinking: boolean;
+  isMicEnabled: boolean;
+  isCameraEnabled: boolean;
+  isFaceBlurEnabled: boolean;
   canSend: boolean;
   connectionStatus: ConnectionStatus;
   sessionStartError: string | null;
   wsUrl: string;
   onStart: () => void;
   onStop: () => void;
+  onNewSession: () => void;
+  onToggleMic: () => void;
+  onToggleCamera: () => void;
+  onToggleFaceBlur: () => void;
   onSendText: (text: string) => void;
   onReconnect: () => void;
+}
+
+function CameraIcon({ muted }: { muted: boolean }) {
+  if (muted) {
+    return (
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <path
+          d="M4 8h4l2-2h4l2 2h4a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V10a2 2 0 0 1 2-2Z"
+          stroke="currentColor"
+          strokeWidth="1.5"
+          strokeLinejoin="round"
+        />
+        <circle cx="12" cy="13" r="3" stroke="currentColor" strokeWidth="1.5" />
+        <path d="M4 4l16 16" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+      </svg>
+    );
+  }
+
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path
+        d="M4 8h4l2-2h4l2 2h4a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V10a2 2 0 0 1 2-2Z"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinejoin="round"
+      />
+      <circle cx="12" cy="13" r="3" stroke="currentColor" strokeWidth="1.5" />
+    </svg>
+  );
+}
+
+function MicIcon({ muted }: { muted: boolean }) {
+  if (muted) {
+    return (
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <path
+          d="M12 15a3 3 0 0 0 3-3V6a3 3 0 1 0-6 0v6a3 3 0 0 0 3 3Z"
+          stroke="currentColor"
+          strokeWidth="1.5"
+        />
+        <path
+          d="M19 11v1a7 7 0 0 1-14 0v-1M12 19v3M8 22h8"
+          stroke="currentColor"
+          strokeWidth="1.5"
+          strokeLinecap="round"
+        />
+        <path d="M4 4l16 16" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+      </svg>
+    );
+  }
+
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path
+        d="M12 15a3 3 0 0 0 3-3V6a3 3 0 1 0-6 0v6a3 3 0 0 0 3 3Z"
+        stroke="currentColor"
+        strokeWidth="1.5"
+      />
+      <path
+        d="M19 11v1a7 7 0 0 1-14 0v-1M12 19v3M8 22h8"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
 }
 
 export function ControlBar({
   isSessionActive,
   isStartingSession,
   isThinking,
+  isMicEnabled,
+  isCameraEnabled,
+  isFaceBlurEnabled,
   canSend,
   connectionStatus,
   sessionStartError,
   wsUrl,
   onStart,
   onStop,
+  onNewSession,
+  onToggleMic,
+  onToggleCamera,
+  onToggleFaceBlur,
   onSendText,
   onReconnect,
 }: ControlBarProps) {
@@ -87,17 +167,68 @@ export function ControlBar({
 
       <div className="control-section control-section--primary">
         {!isSessionActive ? (
-          <button
-            className="btn btn-primary btn-lg"
-            onClick={onStart}
-            disabled={isStartingSession}
-          >
-            {isStartingSession ? "准备中..." : "开始对话"}
-          </button>
+          <div className="session-controls">
+            <button
+              className="btn btn-primary btn-lg"
+              onClick={onStart}
+              disabled={isStartingSession}
+            >
+              {isStartingSession ? "准备中..." : "开始对话"}
+            </button>
+            <button
+              type="button"
+              className="btn btn-new-session"
+              onClick={onNewSession}
+              disabled={isStartingSession || isThinking}
+              aria-label="新建对话"
+            >
+              新建对话
+            </button>
+          </div>
         ) : (
-          <button className="btn btn-session-stop" onClick={onStop}>
-            结束对话
-          </button>
+          <div className="session-controls">
+            <button
+              type="button"
+              className={`btn btn-mic${isMicEnabled ? "" : " btn-mic--muted"}`}
+              onClick={onToggleMic}
+              aria-pressed={isMicEnabled}
+              aria-label={isMicEnabled ? "关闭麦克风" : "开启麦克风"}
+            >
+              <MicIcon muted={!isMicEnabled} />
+              <span>{isMicEnabled ? "麦克风" : "麦克风"}</span>
+            </button>
+            <button
+              type="button"
+              className={`btn btn-camera${isCameraEnabled ? "" : " btn-camera--muted"}`}
+              onClick={onToggleCamera}
+              aria-pressed={isCameraEnabled}
+              aria-label={isCameraEnabled ? "关闭摄像头" : "开启摄像头"}
+            >
+              <CameraIcon muted={!isCameraEnabled} />
+              <span>{isCameraEnabled ? "摄像头" : "摄像头"}</span>
+            </button>
+            <button type="button" className="btn btn-session-stop" onClick={onStop}>
+              结束对话
+            </button>
+            <button
+              type="button"
+              className="btn btn-new-session"
+              onClick={onNewSession}
+              disabled={isStartingSession || isThinking}
+              aria-label="新建对话"
+            >
+              新建对话
+            </button>
+            <button
+              type="button"
+              className={`btn btn-face-blur${isFaceBlurEnabled ? " btn-face-blur--active" : ""}`}
+              onClick={onToggleFaceBlur}
+              aria-pressed={isFaceBlurEnabled}
+              aria-label={isFaceBlurEnabled ? "关闭人脸磨砂" : "开启人脸磨砂"}
+            >
+              {isFaceBlurEnabled ? "人脸模糊" : "人脸模糊"}
+            </button>
+          </div>
         )}
       </div>
 

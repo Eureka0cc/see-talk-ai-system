@@ -1,5 +1,6 @@
 package com.seetalk.id;
 
+import com.seetalk.model.id.SnowflakeIdWorker;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 

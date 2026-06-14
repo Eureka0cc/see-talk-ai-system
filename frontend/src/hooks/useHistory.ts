@@ -1,5 +1,7 @@
 import { useCallback, useState } from "react";
-import type { HistoryMessage, PageResponse, SessionSummary } from "../types/history";
+import type { HistoryMessage, SessionSummary } from "../types/history";
+import { listSessions } from "../api/huihualishi";
+import request from "../request";
 
 export function useHistory() {
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
@@ -13,17 +15,17 @@ export function useHistory() {
     setLoadingSessions(true);
     setError(null);
     try {
-      const res = await fetch("/api/sessions");
-      const contentType = res.headers.get("content-type") ?? "";
-      if (!contentType.includes("application/json")) {
-        throw new Error("无法加载历史记录：后端 API 未响应（请确认 backend 已启动且 /api 已正确代理）");
-      }
-      if (!res.ok) throw new Error(`加载会话列表失败 (${res.status})`);
-      const data: PageResponse<SessionSummary> = await res.json();
-      setSessions(data.content.map((session) => ({
-        ...session,
-        id: String(session.id),
-      })));
+      const res = await listSessions({});
+      setSessions(
+        (res.data?.content ?? []).map((dto) => ({
+          id: String(dto.id ?? ""),
+          title: dto.title ?? "",
+          preview: dto.preview ?? "",
+          lastActiveTime: dto.lastActiveTime ?? "",
+          messageCount: dto.messageCount ?? 0,
+          createTime: dto.createTime ?? "",
+        })),
+      );
     } catch (e) {
       setError(e instanceof Error ? e.message : "加载失败");
     } finally {
@@ -31,44 +33,50 @@ export function useHistory() {
     }
   }, []);
 
+  const fetchMessages = useCallback(async (sessionId: string): Promise<HistoryMessage[]> => {
+    const res = await request<API.BaseResponseListMessageDto>(
+      `/api/sessions/${sessionId}/messages`,
+      { method: "GET" },
+    );
+    return (res.data ?? []).map((dto) => ({
+      id: String(dto.id ?? ""),
+      role: dto.role ?? "user",
+      content: dto.content ?? "",
+      usedVision: dto.usedVision ?? false,
+      createTime: dto.createTime ?? "",
+    }));
+  }, []);
+
   const loadMessages = useCallback(async (sessionId: string) => {
     setLoadingMessages(true);
     setError(null);
     setSelectedSessionId(sessionId);
     try {
-      const res = await fetch(`/api/sessions/${sessionId}/messages`);
-      const contentType = res.headers.get("content-type") ?? "";
-      if (!contentType.includes("application/json")) {
-        throw new Error("无法加载消息：后端 API 未响应（请确认 backend 已启动且 /api 已正确代理）");
-      }
-      if (!res.ok) throw new Error(`加载消息失败 (${res.status})`);
-      const data: HistoryMessage[] = await res.json();
-      setMessages(data.map((message) => ({
-        ...message,
-        id: String(message.id),
-      })));
+      setMessages(await fetchMessages(sessionId));
     } catch (e) {
       setMessages([]);
       setError(e instanceof Error ? e.message : "加载失败");
     } finally {
       setLoadingMessages(false);
     }
-  }, []);
+  }, [fetchMessages]);
 
-  const deleteSession = useCallback(async (sessionId: string) => {
-    setError(null);
-    try {
-      const res = await fetch(`/api/sessions/${sessionId}`, { method: "DELETE" });
-      if (!res.ok && res.status !== 204) throw new Error(`删除失败 (${res.status})`);
-      setSessions((prev) => prev.filter((s) => s.id !== sessionId));
-      if (selectedSessionId === sessionId) {
-        setSelectedSessionId(null);
-        setMessages([]);
+  const deleteSession = useCallback(
+    async (sessionId: string) => {
+      setError(null);
+      try {
+        await request(`/api/sessions/${sessionId}`, { method: "DELETE" });
+        setSessions((prev) => prev.filter((s) => s.id !== sessionId));
+        if (selectedSessionId === sessionId) {
+          setSelectedSessionId(null);
+          setMessages([]);
+        }
+      } catch (e) {
+        setError(e instanceof Error ? e.message : "删除失败");
       }
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "删除失败");
-    }
-  }, [selectedSessionId]);
+    },
+    [selectedSessionId],
+  );
 
   return {
     sessions,
@@ -79,6 +87,7 @@ export function useHistory() {
     error,
     loadSessions,
     loadMessages,
+    fetchMessages,
     deleteSession,
   };
 }

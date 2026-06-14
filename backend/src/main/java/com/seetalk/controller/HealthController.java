@@ -1,5 +1,9 @@
 package com.seetalk.controller;
 
+import com.seetalk.common.BaseResponse;
+import com.seetalk.common.ResultUtils;
+import com.seetalk.model.constants.ApiConstants;
+import com.seetalk.model.constants.ChatConstants;
 import com.seetalk.service.VisionChatService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -15,7 +19,7 @@ public class HealthController {
 
     private final VisionChatService visionChatService;
 
-    @Value("${spring.ai.dashscope.chat.options.model:qwen3-vl-flash}")
+    @Value("${spring.ai.dashscope.chat.options.model:" + ChatConstants.DEFAULT_MODEL + "}")
     private String visionModel;
 
     public HealthController(VisionChatService visionChatService) {
@@ -23,12 +27,12 @@ public class HealthController {
     }
 
     @Operation(summary = "健康检查")
-    @GetMapping("/health")
-    public Map<String, Object> health() {
-        return Map.of(
+    @GetMapping(ApiConstants.HEALTH_PATH)
+    public BaseResponse<Map<String, Object>> health() {
+        return ResultUtils.success(Map.of(
                 "status", "ok",
                 "api_configured", visionChatService.isApiConfigured(),
                 "vision_model", visionModel
-        );
+        ));
     }
 }
