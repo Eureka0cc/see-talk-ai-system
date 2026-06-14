@@ -1,20 +1,74 @@
 server:
   port: 8080
+  tomcat:
+    websocket:
+      max-text-message-buffer-size: 524288
+      max-binary-message-buffer-size: 524288
+
+logging:
+  level:
+    com.seetalk: INFO
+    org.springframework.web.socket.handler.ExceptionWebSocketHandlerDecorator: WARN
 
 spring:
+  autoconfigure:
+    exclude:
+      - com.alibaba.cloud.ai.autoconfigure.dashscope.DashScopeChatAutoConfiguration
+  datasource:
+    url: jdbc:mysql://${MYSQL_HOST:localhost}:${MYSQL_PORT:3306}/${MYSQL_DATABASE:seetalk}?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai&characterEncoding=utf8
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    username: ${MYSQL_USER:root}
+    password: ${MYSQL_PASSWORD:123456}
+    hikari:
+      maximum-pool-size: 5
+      minimum-idle: 2
+      connection-timeout: 10000
+      idle-timeout: 300000
+      max-lifetime: 600000
+      leak-detection-threshold: 15000
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+  jpa:
+    hibernate:
+      ddl-auto: update
+    show-sql: false
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.MySQLDialect
+        use_sql_comments: true
   ai:
     dashscope:
-      api-key: ${DASHSCOPE_API_KEY:}
+      api-key: ${AI_DASHSCOPE_API_KEY:${DASHSCOPE_API_KEY:}}
       chat:
         options:
-          model: qwen-vl-flash
+          model: qwen3-vl-flash
+          multi-model: true
           max-tokens: 300
           temperature: 0.7
 
+springdoc:
+  api-docs:
+    enabled: true
+    path: /v3/api-docs
+  swagger-ui:
+    enabled: true
+
+knife4j:
+  enable: true
+  setting:
+    language: zh_cn
+
 seetalk:
+  snowflake-worker-id: ${SEETALK_SNOWFLAKE_WORKER_ID:1}
+  snowflake-datacenter-id: ${SEETALK_SNOWFLAKE_DATACENTER_ID:1}
   cors-origins: http://localhost:5173,http://127.0.0.1:5173
   max-image-width: 640
   max-image-height: 480
   max-frames-per-minute: 12
   max-context-messages: 20
   session-timeout-seconds: 3600
+
+
