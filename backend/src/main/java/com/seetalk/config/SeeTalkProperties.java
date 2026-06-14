@@ -11,6 +11,8 @@ public class SeeTalkProperties {
     private int maxFramesPerMinute = 12;
     private int maxContextMessages = 20;
     private int sessionTimeoutSeconds = 3600;
+    private long snowflakeWorkerId = 1;
+    private long snowflakeDatacenterId = 1;
 
     public int getMaxImageWidth() {
         return maxImageWidth;
@@ -62,5 +64,21 @@ public class SeeTalkProperties {
 
     public String[] getCorsOriginArray() {
         return corsOrigins.split(",");
+    }
+
+    public long getSnowflakeWorkerId() {
+        return snowflakeWorkerId;
+    }
+
+    public void setSnowflakeWorkerId(long snowflakeWorkerId) {
+        this.snowflakeWorkerId = snowflakeWorkerId;
+    }
+
+    public long getSnowflakeDatacenterId() {
+        return snowflakeDatacenterId;
+    }
+
+    public void setSnowflakeDatacenterId(long snowflakeDatacenterId) {
+        this.snowflakeDatacenterId = snowflakeDatacenterId;
     }
 }
